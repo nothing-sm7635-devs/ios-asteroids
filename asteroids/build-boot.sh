@@ -9,7 +9,7 @@
 # filesystem and the persistent log (last 4 MiB of userdata) would write to it.
 set -euo pipefail
 cd "$(dirname "$0")"
-kernel=$(realpath "${1:?usage: build-boot.sh KERNEL NAME [BOOT-ARGS...]}")
+kernel=$(python3 -I -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "${1:?usage: build-boot.sh KERNEL NAME [BOOT-ARGS...]}")
 name=${2:?usage: build-boot.sh KERNEL NAME [BOOT-ARGS...]}
 shift 2
 args=${*:-debug=0xc serial=3 cpus=1 keepsyms=1}

@@ -7,12 +7,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 LOS=${LOS:-/home/saalim/os/los24}
-LLVM=$LOS/prebuilts/clang/host/linux-x86/clang-r596125/bin
-MKBOOTIMG=$LOS/system/tools/mkbootimg/mkbootimg.py
+# Any LLVM with clang + ld.lld + llvm-objcopy/nm/readelf (macOS: brew install llvm lld)
+LLVM=${LLVM:-$LOS/prebuilts/clang/host/linux-x86/clang-r596125/bin}
+# AOSP system/tools/mkbootimg/mkbootimg.py
+MKBOOTIMG=${MKBOOTIMG:-$LOS/system/tools/mkbootimg/mkbootimg.py}
 CC="$LLVM/clang --target=aarch64-none-elf"
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra"
-payload=$(realpath "${1:?usage: build.sh PAYLOAD [OUT]}")
-out=$(realpath -m "${2:-out/shim-boot.img}")
+abspath() { python3 -I -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$1"; }
+payload=$(abspath "${1:?usage: build.sh PAYLOAD [OUT]}")
+out=$(abspath "${2:-out/shim-boot.img}")
 SHIM=../../shim
 PROBE=../probe
 mkdir -p out
@@ -31,8 +34,8 @@ $LLVM/ld.lld -static -T $SHIM/shim.ld --build-id=none -N out/start.o $objs -o ou
 [ -z "$($LLVM/llvm-nm -u out/shim.elf)" ] || { $LLVM/llvm-nm -u out/shim.elf; exit 1; }
 $LLVM/llvm-objcopy -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$($LLVM/llvm-nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
-truncate -s "$size" out/Image
+size=$($LLVM/llvm-nm out/shim.elf | awk '$3=="_end"{print $1}')
+python3 -I -c 'import sys; open(sys.argv[1], "r+b").truncate(int(sys.argv[2], 16))' out/Image "$size"
 # loader.c finds the payload at _end (page aligned, right after the padding)
 cat out/Image "$payload" > out/Image+payload
 # arm64 header image_size (offset 16) must cover the payload too, so ABL keeps it free

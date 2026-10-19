@@ -5,6 +5,58 @@ codename Asteroids (IND SKU), SM7635 "volcano" (Snapdragon 7s Gen 3).
 Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 `/home/saalim/os/los24/kernel/nothing/{sm7635,sm7635-devicetrees,sm7635-modules}`.
 
+## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
+
+**Where we are.** Probes done; the boot chain up to xnu works on the phone
+(loader test = solid green). Kernel patch 0082 is written but the kernel is
+NOT built yet: the user started the xnu CI build (workflow `xnu.yml`, push of
+`xnu/patches/` to main) and is moving to a Mac. Nothing has been flashed;
+everything ran via `fastboot boot`. userdata still holds LineageOS.
+
+**Next step (first xnu boot on asteroids):**
+1. Get the CI kernel: `gh run download RUN_ID -R <repo> -n xnu-kernel -D xnu/out`
+   (the user runs CI on their remote; `me` = danascape/ios-android). Use
+   `kernel.development.sweet` (MACHINE_CONFIG SWEET; the same kernel serves both
+   boards). Check the CI log says "Applying patch: .../0082-..." and NOT
+   "Skipping patch 0082" (CI skips non-applying patches silently).
+2. `asteroids/build-boot.sh xnu/out/kernel.development.sweet first`
+   -> `asteroids/out/first-boot.img`. Default boot-args
+   `debug=0xc serial=3 cpus=1 keepsyms=1`: no rd=, so no UFS root, no storage
+   access at all.
+3. Phone into fastboot (power + vol-), `fastboot boot asteroids/out/first-boot.img`.
+4. Expected: navy shim screen (SSU, payload, JUMP), then xnu's early console on
+   black ("SWEET EARLY 1..20" marks, only rows inside the 32MB block holding the
+   fb start, i.e. the top ~1638 rows), then the fbcon console; it should end
+   waiting for a root device. A white 64x32 band at bottom-left of that area =
+   start.s stage 0 ran. Photograph the screen.
+5. Likely trouble spots, in order: (a) something in early boot still assumes
+   sweet (search the photo's last mark in osfmk/arm/arm_init.c); (b) GIC under
+   Gunyah's vGIC (probe 2 showed the 0x13 GICD + 32-bit priority setup works);
+   (c) timer INTID 27; (d) memory at 0x8c0000000 (pmap is fine with it per
+   design, untested).
+6. After that: `cpus=8` (secondaries enter at EL1 under Gunyah; sweet's entry
+   already handles EL1), then the root filesystem question (needs userdata
+   -> iOS: ask the user before writing anything; build-boot.sh refuses
+   `rd=ufsroot0 ufsrw=1` unless ASTEROIDS_ALLOW_UFS_WRITES=yes).
+
+**How to run things (any host):**
+- Shim/probes: `asteroids/shim/build.sh PAYLOAD [OUT]`, `asteroids/probe/build.sh N`.
+  Need clang + ld.lld + llvm-objcopy/nm/readelf (`LLVM=/path/to/llvm/bin`; on this
+  Linux host the LineageOS prebuilt is the default; macOS: `brew install llvm lld`,
+  `LLVM=$(brew --prefix llvm)/bin`, lld from `$(brew --prefix lld)/bin` may need
+  to be symlinked next to it) and AOSP mkbootimg.py (`MKBOOTIMG=...`; e.g.
+  `git clone https://android.googlesource.com/platform/system/tools/mkbootimg`).
+  python3 for tools/*.py. Android platform-tools for fastboot/adb.
+- `tools/xnu-tree.sh DIR` recreates the patched xnu tree (tag `patched`) to write
+  patch 0083+ as `git diff patched`; verify it applies before pushing.
+- Live DT: `asteroids/backup/live.dtb` (dtc: `dtc -I dtb -O dts`).
+- Phone: LineageOS 24 userdebug, `adb root` works; slot b; fastboot boot works.
+  The probe/shim screens hold forever (power + vol- to get back to fastboot).
+
+**Not in git (stay on the Linux PC unless copied):** `asteroids/backup/` (14 GB,
+device-specific: persist/modem calibration, serial in live.dtb - keep private),
+the phone photos (results are transcribed below), LineageOS tree/toolchain.
+
 ## Handoff (2026-10-19)
 
 - **Backups done and verified** (`asteroids/backup/`, git-ignored, 14 GB, made by

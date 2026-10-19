@@ -7,8 +7,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 LOS=${LOS:-/home/saalim/os/los24}
-LLVM=$LOS/prebuilts/clang/host/linux-x86/clang-r596125/bin
-MKBOOTIMG=$LOS/system/tools/mkbootimg/mkbootimg.py
+# Any LLVM with clang + ld.lld + llvm-objcopy/nm/readelf (macOS: brew install llvm lld)
+LLVM=${LLVM:-$LOS/prebuilts/clang/host/linux-x86/clang-r596125/bin}
+# AOSP system/tools/mkbootimg/mkbootimg.py
+MKBOOTIMG=${MKBOOTIMG:-$LOS/system/tools/mkbootimg/mkbootimg.py}
 CC="$LLVM/clang --target=aarch64-none-elf"
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra"
 SHIM=../../shim
@@ -34,8 +36,8 @@ abs=$($LLVM/llvm-readelf -r $objs | grep -c ABS64 || true)
 $LLVM/ld.lld -static -T $SHIM/shim.ld --build-id=none -N out/$n/start.o $objs -o out/$n/probe.elf
 $LLVM/llvm-objcopy -O binary out/$n/probe.elf out/$n/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
-size=$($LLVM/llvm-nm out/$n/probe.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
-truncate -s "$size" out/$n/Image
+size=$($LLVM/llvm-nm out/$n/probe.elf | awk '$3=="_end"{print $1}')
+python3 -I -c 'import sys; open(sys.argv[1], "r+b").truncate(int(sys.argv[2], 16))' out/$n/Image "$size"
 kernel=out/$n/Image
 if [ "${2:-}" = -z ]; then
 	gzip -9nc out/$n/Image > out/$n/Image.gz

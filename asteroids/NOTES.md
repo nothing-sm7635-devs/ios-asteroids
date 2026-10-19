@@ -251,6 +251,10 @@ NOT built): skip that busy count on ARM64_BOARD_CONFIG_SWEET only (forcing
 iokitDaemonAvailable() false would make kext requests panic, OSKext.cpp:10202).
 Expect: About opens at once; "SWEET BUSY: root busy=0".
 
+**Since 2026-10-19 20:52 a second phone (serial b4479a49) is on this PC's USB. Always
+address the Nothing Phone (3a) explicitly: `fastboot -s 00163352L002594 ...`,
+`adb -s 00163352L002594 ...`; never send anything to the other device.**
+
 ## Open: no wallpaper/widgets, sluggish (user report 2026-10-19 evening)
 
 **PosterBoard** (draws iOS 16 wallpapers) crashes once on every full boot (touch1-3,

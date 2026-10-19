@@ -11,6 +11,7 @@
  * Afterwards it stays on screen, petting the watchdog once a second.
  */
 #include <stdint.h>
+#include "common.h"
 #include "fbcon.h"
 #include "mmu.h"
 
@@ -29,100 +30,17 @@
 #define PTIMER_INTID		30	/* DT: <GIC_PPI 14 ...> */
 #define SGI_INTID		1
 
-#define PSCI_VERSION		0x84000000UL
-#define PSCI_CPU_OFF		0x84000002UL
-#define PSCI_CPU_ON		0xc4000003UL
-#define PSCI_SYSTEM_OFF		0x84000008UL
-#define PSCI_SYSTEM_RESET	0x84000009UL
-#define PSCI_FEATURES		0x8400000aUL
-#define PSCI_SYSTEM_RESET2	0xc4000012UL
-#define SMCCC_VERSION		0x80000000UL
-
-/* Gunyah vendor-hyp SMCCC calls, drivers/virt/gunyah/gh_virt_wdt.c */
-#define GH_WDT_CONTROL		0x86000005UL
-#define GH_WDT_STATUS		0x86000006UL
-#define GH_WDT_PET		0x86000007UL
-
 #define NR_CPUS			8
-
-#define rsr(r) ({ uint64_t _v; __asm__ volatile("mrs %0, " r : "=r"(_v)); _v; })
-#define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
-#define isb() __asm__ volatile("isb" ::: "memory")
-
-static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
-static inline uint64_t rd64(uintptr_t a) { return *(volatile uint64_t *)a; }
-static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
-static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 
 extern char _head[], secondary_entry[];
 
-static const char *stage;	/* set at runtime: no absolute pointers in data */
 static volatile uint64_t sec_mpidr[NR_CPUS];
 static volatile uint32_t irq_count, irq_other, irq_last;
 static volatile int irq_src;
-static int status_row;
-
-struct smc_res {
-	uint64_t a0, a1, a2, a3;
-};
-
-static struct smc_res smc4(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
-{
-	register uint64_t x0 __asm__("x0") = fn;
-	register uint64_t x1 __asm__("x1") = a1;
-	register uint64_t x2 __asm__("x2") = a2;
-	register uint64_t x3 __asm__("x3") = a3;
-	__asm__ volatile("smc #0"
-			 : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
-			 :
-			 : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
-			   "x12", "x13", "x14", "x15", "x16", "x17", "memory");
-	return (struct smc_res){ x0, x1, x2, x3 };
-}
-
-static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
-{
-	return smc4(fn, a1, a2, a3).a0;
-}
-
-static uint64_t now(void)
-{
-	isb();
-	return rsr("cntpct_el0");
-}
-
-static void delay_ms(unsigned ms)
-{
-	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
-	while (now() < end)
-		;
-}
-
-static uint32_t to_us(uint64_t ticks)
-{
-	return ticks * 10 / 192;	/* 19.2 MHz */
-}
-
-/* Keep the result screen up forever; the watchdog gets petted every second. */
-static void __attribute__((noreturn)) hold(void)
-{
-	uint64_t f = rsr("cntfrq_el0"), t0 = now();
-	for (;;) {
-		struct smc_res st = smc4(GH_WDT_STATUS, 0, 0, 0);
-		uint64_t pet = smc(GH_WDT_PET, 0, 0, 0);
-		int r = con_row();
-		con_set_row(status_row);
-		con_dec("UPTIME s", (now() - t0) / f);
-		con_hex2("WDT", "ctl=", st.a1, "since=", st.a2);
-		con_hex2(" pet", "ret=", pet, "st=", st.a0);
-		con_set_row(r);
-		delay_ms(1000);
-	}
-}
 
 /* ---- exceptions ---- */
 
-static void irq_handler(void)
+void probe_irq(void)
 {
 	uint64_t iar = rsr("icc_iar1_el1");
 	uint32_t id = iar & 0xffffff;
@@ -140,33 +58,6 @@ static void irq_handler(void)
 		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
 	wsr("icc_eoir1_el1", iar);
 	isb();
-}
-
-void exc_handler(uint64_t slot, uint64_t *regs)
-{
-	if (slot == 5) {	/* IRQ from current EL, SPx */
-		irq_handler();
-		return;
-	}
-	con_clear(BLUE);
-	switch (slot & 3) {
-	case 0: con_str("PANIC", "SYNC"); break;
-	case 1: con_str("PANIC", "IRQ"); break;
-	case 2: con_str("PANIC", "FIQ"); break;
-	default: con_str("PANIC", "SERROR"); break;
-	}
-	con_hex2("SLOT", "n=", slot, "cpu=", rsr("mpidr_el1"));
-	con_str("STAGE", stage);
-	con_hex("ESR", rsr("esr_el1"));
-	con_hex("ELR", rsr("elr_el1"));
-	con_hex("FAR", rsr("far_el1"));
-	con_hex("SPSR", rsr("spsr_el1"));
-	con_hex("X0", regs[0]);
-	con_hex("X1", regs[1]);
-	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
-	con_skip();
-	status_row = con_row();
-	hold();
 }
 
 /* ---- SMP ---- */

@@ -1,10 +1,12 @@
 /*
  * Act as iBoot for xnu on the Nothing Phone (3a), as shim/loader.c does on
- * sweet, with two differences that come from boot.img v4:
- *   - ABL's initrd is vendor_boot's ramdisk followed by ours (and bootconfig),
- *     so the SWEETXNU payload is somewhere inside it, at an arbitrary byte
- *     offset: search for it, and copy with aligned loads only (the MMU is
- *     off, every access is Device memory and must be naturally aligned).
+ * sweet, with two differences:
+ *   - the SWEETXNU payload is appended to our own Image (build.sh), right at
+ *     _end: ABL ignores a boot.img v4 ramdisk here and builds the initrd from
+ *     vendor_boot + the flashed init_boot (+ bootconfig) instead. The initrd
+ *     is still searched as a fallback; payloads there sit at arbitrary byte
+ *     offsets, so all copies use aligned loads only (the MMU is off, every
+ *     access is Device memory and must be naturally aligned).
  *   - the framebuffer comes from the MDSS source pipe (fbcon.c), not a constant.
  */
 #include <stdint.h>
@@ -105,20 +107,23 @@ static uintptr_t find_payload(uintptr_t lo, uintptr_t hi)
 
 static struct payload hdr;	/* aligned copy of the payload header */
 
+extern char _end[];
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 const char *loader_boot(uintptr_t dtb)
 {
-	uint64_t rd_start, rd_end;
+	uint64_t rd_start = 0, rd_end = 0;
+	uintptr_t pl = (uintptr_t)_end;
 
-	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
-	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
-		return "no initrd in /chosen";
-	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
-
-	uintptr_t pl = find_payload(rd_start, rd_end);
-	if (!pl)
-		return "no SWEETXNU payload";
+	if (fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) &&
+	    fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
+		con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	if (!find_payload(pl, pl + 16)) {
+		pl = rd_end ? find_payload(rd_start, rd_end) : 0;
+		if (!pl)
+			return "no SWEETXNU payload";
+	}
 	copy_any((uintptr_t)&hdr, pl, sizeof(hdr));
 	const struct payload *p = &hdr;
 	con_hex2("PAYLOAD", "at=", pl, "off=", pl - rd_start);

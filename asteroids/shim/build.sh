@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the asteroids xnu shim and wrap it in a boot.img v4 like the stock
-# boot_b. ABL appends our ramdisk (the SWEETXNU payload, tools/mkpayload.py)
-# to vendor_boot's; loader.c searches the initrd for it.
+# boot_b. The SWEETXNU payload (tools/mkpayload.py) is appended to the Image:
+# ABL loads the whole kernel blob, but ignores a v4 boot ramdisk on this phone
+# (the initrd is vendor_boot + flashed init_boot), see asteroids/NOTES.md.
 #   asteroids/shim/build.sh PAYLOAD [OUT]    default OUT: out/shim-boot.img
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -32,6 +33,10 @@ $LLVM/llvm-objcopy -O binary out/shim.elf out/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$($LLVM/llvm-nm out/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
 truncate -s "$size" out/Image
+# loader.c finds the payload at _end (page aligned, right after the padding)
+cat out/Image "$payload" > out/Image+payload
+# arm64 header image_size (offset 16) must cover the payload too, so ABL keeps it free
+python3 -I -c 'import struct,sys; f=open(sys.argv[1],"r+b"); n=(len(f.read())+0xfff)&~0xfff; f.seek(16); f.write(struct.pack("<Q",n))' out/Image+payload
 python3 $MKBOOTIMG --header_version 4 --os_version 17.0.0 --os_patch_level 2026-10 \
-	--kernel out/Image --ramdisk "$payload" --cmdline "" -o "$out"
+	--kernel out/Image+payload --cmdline "" -o "$out"
 ls -l out/Image "$payload" "$out"

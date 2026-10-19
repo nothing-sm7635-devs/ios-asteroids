@@ -45,6 +45,15 @@ Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
     args `debug=0xc serial=3 cpus=1 keepsyms=1`, no rd= (no storage access).
   - Loader test: `asteroids/out/test-boot.img` (shim + testpayload.S: green
     screen = boot_args/physBase/fb correct, red = wrong).
+  - **Observed 2026-10-19 ~14:56:** with the payload as the boot.img v4 ramdisk
+    the shim said "no SWEETXNU payload": initrd 0xB7712000-0xB7FFE97C, the same
+    as a normal Linux boot = vendor_boot ramdisk 6387099 + flashed init_boot_b
+    ramdisk 2968524 + 2069 B bootconfig. **ABL ignores our boot ramdisk.**
+    Fix: payload appended to the shim Image at _end, arm64 header image_size
+    patched to cover it (shim/build.sh); initrd search kept as fallback.
+  - **Observed ~14:58: loader test SOLID GREEN** - payload found at _end, copied
+    to 0x8c0004000, boot_args physBase 0x8c0000000, 32 bpp fb, stride ok, code
+    ran inside kernel RAM. Shim screen before it: SSU ACTIVE then TUR lun0 ok.
 - **CI not available on this host:** no `gh` CLI here. The kernel must be built by
   the xnu workflow (push of xnu/patches to main triggers it). Note: CI silently
   SKIPS patches that fail `git apply --check` - verify a patch applies first.

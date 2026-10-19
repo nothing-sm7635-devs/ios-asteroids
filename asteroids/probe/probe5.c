@@ -161,7 +161,7 @@ static uint16_t db16(uint32_t off)
 	return (uint16_t)(rd32(CMD_DB + (off & ~3U)) >> (8 * (off & 3U)));
 }
 
-static uint32_t db_lookup(const char *res)
+static uint32_t db_lookup(const char *res, unsigned want_slave)
 {
 	uint32_t key[2] = { 0, 0 }, found = 0, n = 0;
 	for (unsigned i = 0; i < 8 && res[i]; i++)
@@ -182,8 +182,8 @@ static uint32_t db_lookup(const char *res)
 			}
 		}
 	}
-	/* exactly one VRM (slave 4) resource, 16-byte aligned */
-	return n == 1 && (found >> 16) == 4 && !(found & 15) ? found : 0;
+	/* exactly one resource of that slave type (4 VRM, 5 BCM), word aligned */
+	return n == 1 && (found >> 16) == want_slave && !(found & 3) ? found : 0;
 }
 
 static uint32_t tcs_rd(unsigned t, uint32_t r) { return rd32(TCS_BASE + t * TCS_STRIDE + r); }
@@ -201,10 +201,11 @@ static int tcs_idle(unsigned t)
 	       !(rd32(TCS_BASE + R_IRQ_STATUS) & (1U << t));
 }
 
-/* One active (AMC) VRM request: voltage, mode HPM (7), enable; as sweet_rpmh.c. */
-static int vreg_on(const char *label, const char *res, uint32_t mv)
+/* One active (AMC) request of n <= 3 commands to addr + off[c], all acked. */
+static int amc_send(const char *label, uint32_t addr, const uint32_t *off,
+		    const uint32_t *val, unsigned n)
 {
-	uint32_t addr = db_lookup(res);
+	uint32_t mask = (1U << n) - 1;
 	int t = -1;
 	for (unsigned i = 0; i < N_ACTIVE && t < 0; i++)
 		if (tcs_idle(i))
@@ -215,15 +216,13 @@ static int vreg_on(const char *label, const char *res, uint32_t mv)
 
 	uint32_t bit = 1U << t, irq_en = rd32(TCS_BASE + R_IRQ_EN);
 	wr32(TCS_BASE + R_IRQ_EN, irq_en & ~bit);
-	static const uint32_t off[3] = { 0, 8, 4 };
-	uint32_t val[3] = { mv, 7, 1 };
-	for (unsigned c = 0; c < 3; c++) {
+	for (unsigned c = 0; c < n; c++) {
 		tcs_wr(t, R_MSGID + c * CMD_STRIDE, MSGID_WRITE_ACK);
 		tcs_wr(t, R_ADDR + c * CMD_STRIDE, addr + off[c]);
 		tcs_wr(t, R_DATA + c * CMD_STRIDE, val[c]);
 	}
-	tcs_wr(t, R_WAIT, 7);
-	tcs_wr(t, R_ENABLE, 7);
+	tcs_wr(t, R_WAIT, mask);
+	tcs_wr(t, R_ENABLE, mask);
 	tcs_wr(t, R_CONTROL, 0);
 	tcs_wr(t, R_CONTROL, AMC_EN);
 	tcs_wr(t, R_CONTROL, AMC_EN | AMC_TRIGGER);
@@ -232,7 +231,7 @@ static int vreg_on(const char *label, const char *res, uint32_t mv)
 	uint64_t end = now() + rsr("cntfrq_el0") / 10;	/* 100 ms */
 	while (now() < end) {
 		done = 1;
-		for (unsigned c = 0; c < 3; c++) {
+		for (unsigned c = 0; c < n; c++) {
 			st[c] = tcs_rd(t, R_CMD_STATUS + c * CMD_STRIDE);
 			if ((st[c] & (CMD_ISSUED | CMD_COMPL)) != (CMD_ISSUED | CMD_COMPL))
 				done = 0;
@@ -242,7 +241,7 @@ static int vreg_on(const char *label, const char *res, uint32_t mv)
 		done = 0;
 	}
 	con_hex2(" done", "ok=", done, "irq=", rd32(TCS_BASE + R_IRQ_STATUS));
-	con_hex2(" cmd", "s0=", st[0], "s2=", st[2]);
+	con_hex2(" cmd", "s0=", st[0], "sN=", st[n - 1]);
 	if (!done)
 		return -1;
 	tcs_wr(t, R_CONTROL, AMC_EN);
@@ -253,6 +252,28 @@ static int vreg_on(const char *label, const char *res, uint32_t mv)
 	wr32(TCS_BASE + R_IRQ_EN, (rd32(TCS_BASE + R_IRQ_EN) & ~bit) | (irq_en & bit));
 	return 0;
 }
+
+/* VRM: voltage, mode HPM (7), enable; as sweet_rpmh.c. */
+static int vreg_on(const char *label, const char *res, uint32_t mv)
+{
+	static const uint32_t off[3] = { 0, 8, 4 };
+	uint32_t val[3] = { mv, 7, 1 };
+	return amc_send(label, db_lookup(res, 4), off, val, 3);
+}
+
+#ifdef PROBE8
+/*
+ * BCM: minimal active vote, BCM_TCS_CMD(commit, valid, x = 1, y = 1) as
+ * bcm-voter.c's keepalive. RPMh takes the max over voters, so it cannot
+ * lower anyone else's vote.
+ */
+static int bcm_on(const char *label, const char *res)
+{
+	static const uint32_t off[1] = { 0 };
+	static const uint32_t val[1] = { 1U << 30 | 1U << 29 | 1U << 14 | 1 };
+	return amc_send(label, db_lookup(res, 5), off, val, 1);
+}
+#endif
 
 /* ---- GENI SPI ---- */
 
@@ -599,11 +620,20 @@ void shim_main(uint64_t dtb)
 		con_str("GPI", "channel setup failed: stop");
 		goto out;
 	}
-	/* run 2 reset the phone at the first doorbell: unmatched SID 0x576 */
+	/* runs 2-3 reset at the first doorbell: unmatched SID 0x576 */
 	stage = "smmu";
-	gpi_smmu_check();
 	if (gpi_smmu_route()) {
 		con_str("SMMU", "route did not stick: stop");
+		goto out;
+	}
+	/*
+	 * Run 5 still reset with the SID routed. QUP0 masters on aggre2_noc
+	 * (UFS is on aggre1), whose way into the system NoC is BCM SN3
+	 * (qnm_aggre2_noc, volcano.c); the boot chain may leave it unvoted.
+	 */
+	stage = "bcm";
+	if (bcm_on("SN3", "SN3")) {
+		con_str("BCM", "SN3 vote failed: stop");
 		goto out;
 	}
 	int cd = con_row();

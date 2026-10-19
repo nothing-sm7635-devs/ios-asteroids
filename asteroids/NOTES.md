@@ -106,6 +106,14 @@ external abort. Fix (17:22): common.h rd32/wr32/rd64/wr8 are inline-asm plain
 ldr/str. **XNU consequence:** any trapped MMIO (SMMU, maybe others) must use plain
 single-register accessors; check sweet drivers' MMIO helpers before touching the
 SMMU from XNU.
+**Probe 8 run 5 (17:23, photo):** no abort; ROUTE slot 0x71 s2cr 0 (copied from
+UFS) smr 0x80000576 read back, gfsr 0; countdown ran, **reset again at the
+doorbell**. So the SMR (as far as Gunyah's emulated view shows) is not enough.
+Next suspect (guess): NoC. qhm_qup0 is on aggre2_noc -> qnm_aggre2_noc = BCM
+**SN3** (volcano.c); UFS is on aggre1 (SN2), which the boot chain uses. Run 6
+build (17:26): `bcm_on("SN3")` = one AMC command 0x60004001 (commit, valid,
+x=1, y=1) via cmd-db slave 5, before the countdown; the SMMU dump lines were
+dropped (results above) to keep the screen in one page.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

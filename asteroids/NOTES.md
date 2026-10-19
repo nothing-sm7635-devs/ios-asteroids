@@ -5,6 +5,16 @@ codename Asteroids (IND SKU), SM7635 "volcano" (Snapdragon 7s Gen 3).
 Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 `/home/saalim/os/los24/kernel/nothing/{sm7635,sm7635-devicetrees,sm7635-modules}`.
 
+## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
+
+vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`
+(f2fs + metadata encryption): Android init reformats a userdata it cannot mount
+-> the iOS image is gone (recoverable only by re-flashing the .simg). ABL boots
+Android whenever a reset happens without volume-down held. Always hold
+power + vol- until the fastboot screen. Lineage recovery (fastboot reboot
+recovery) does not mount_all, it is the way to read the log (tools/sweet-log-pull.sh).
+recovery_b has no kernel (GKI: kernel from boot_b), so it cannot be `fastboot boot`ed.
+
 ## >>> UPDATE 2026-10-19 15:13: FIRST XNU BOOT ON ASTEROIDS WORKS <<<
 
 CI kernel (run on danascape/ios-android, log: "Applying patch ... 0082", built

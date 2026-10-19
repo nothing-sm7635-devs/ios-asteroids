@@ -270,6 +270,10 @@ flag is not set (RE of PosterBoard.framework in research/ipsw-x/dyld).
 built yet); (2) CPU clocks never raised after ABL (topaz needed a cpufreq patch) ->
 probe 9 measures PMU cycles vs timer on CPU0 (A520) and CPU4 (A720); (3)
 bluetoothd/fairplayd relaunch loops.
+**Probe 9 (20:57, observed): CPU clocks are fine** - PMU cycles vs timer over 50 ms:
+CPU0 Cortex-A520 (MIDR 0x410FD801) 1593 MHz x3; CPU4 Cortex-A720 (0x410FD811)
+2351 / 2400 / 2400 MHz; PMCR 0xA041, PMU usable at EL1 under Gunyah. So (2) is
+ruled out at handoff (not yet measured while iOS runs).
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

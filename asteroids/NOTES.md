@@ -324,6 +324,20 @@ iokit/Kernel/arm/SweetAMFI.cpp = AppleMobileFileIntegrity IOService (IOResources
 client: selector 6 -> success, others kIOReturnUnsupported, all logged "SWEET AMFI: ...".
 The LS database is built once on first boot, so after the new kernel userdata needs a fresh
 image (re-flash a2) for the extensions to be registered.
+**amfi1 (CI kernel with 0087, sha256 59fe36bf...82a89; a2 re-flashed 17:29-17:35 UTC with user
+OK, 24/24; boot 17:38, `logs/asteroids-amfi1.txt`):** "SWEET AMFI: lsd sel 6 arg0 1 in 1/20 ->
+0x0" x2 (extension point cache trusted). **PosterBoard did not crash; wallpaper and widgets
+appear** (user), but rendering is glitchy (half black / half blue, solid blue instead of the
+picture). Display path: every swap is one BGRA 1125x2436 layer from backboardd, so the glitch
+is in iOS's software composition; CollectionsPoster creates L008 (0x4c303038), LA08, w30r
+(10-bit), b3a8, 420f surfaces - Metal/GPU formats on a real device (no GPU here).
+online-auth-agent asks AMFI sel 9 and 13 (unsupported, 0xe00002c7).
+New: **PlugInKit extensions crash at launch** (sig 6): SiriTTSSynthesizer, MacinTalkAUSP,
+KonaSynthesizer 24x each, ScreenTimeWidget 1x - uncaught exception in PlugInKit
+func_1aaf39c64 -> CFDictionaryCreate with a nil value (missing launch-time value), heavy
+relaunch churn. Next: heap strings of a PlugInKit extension crash (sweetscan=KonaSynthesizer)
+to see the missing key; try a non-Metal wallpaper (Photos / Gradient / Emoji) to separate
+GPU-less rendering from our display path.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

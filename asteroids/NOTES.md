@@ -40,6 +40,17 @@ GPI node (live DT): qcom,gpi-dma@a00000 size 0x60000, gpi-ee-offset 0x10000,
 max-num-gpii 12, gpii-mask 0x3e (HLOS 1-5), static-gpii-mask 0x1, iommus SID
 0x576, iommu-dma-addr-pool 0x100000+0x100000, dma-coherent; SE0 dmas =
 <gpi 0 0 1 64 2>, <gpi 1 0 1 64 2>.
+Touch status: blocked on the GPI DMA transfer path (not written in this
+session); everything up to it works in probe 5.
+
+**Buttons, probe 7 (16:54, commit 53ad0a2), all four work, read-only:** SPMI arbiter
+v7 (core 0xc400000 ver 0x70010000, 0x380 APIDs), APID map core+0x2000+4n, owner
+cnfg(0xc42d000)+4n, observer 0xc440000 + 0x20*apid, EXT_READL (1<<27)|(addr&0xff)<<4.
+PON (PPID 0x013) = APID 3 owner 0; vol-up GPIO (PPID 0x18d) = APID 0x1F owner 0.
+PON RT_STS 0x1310 idle 0x10 (bit 4: probably USB/charger), +bit 7 power (0x90),
++bit 6 vol- (0x50). PMXR2230 GPIO6 0x8d05 subtype 0x13, 0x8d40 mode 0 (input),
+0x8d46 en 0x80, 0x8d10 RT bit 0 = 1 idle, 0 pressed. AI key: TLMM GPIO 71 io bit 0
+active low. 0 read errors.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

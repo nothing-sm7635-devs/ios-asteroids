@@ -234,22 +234,18 @@ static uint32_t tur(const char *label, uint8_t lun)
 	return rc;
 }
 
-void test_ufs(int wake)
+/* Point the host at our transfer request list. Returns 0 if it is safe to ring doorbells. */
+static int takeover(void)
 {
-	uint32_t cap = ufs_rd(REG_CAP), hcs = ufs_rd(REG_HCS), hce = ufs_rd(REG_HCE);
-	con_hex2("UFS", "ver=", ufs_rd(REG_VER), "cap=", cap);
-	con_hex2(" ", "hce=", hce, "hcs=", hcs);
-	con_hex2(" ", "is=", ufs_rd(REG_IS), "rsr=", ufs_rd(REG_UTRLRSR));
-	con_hex2(" ", "utrlba=", ufs_rd(REG_UTRLBA), "hi=", ufs_rd(REG_UTRLBAU));
-	con_hex2(" ", "dbr=", ufs_rd(REG_UTRLDBR), "nutrs=", (cap & 0x1f) + 1);
+	uint32_t hcs = ufs_rd(REG_HCS), hce = ufs_rd(REG_HCE);
 
 	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
 		con_str("UFS", "host not enabled/ready: stop");
-		return;
+		return -1;
 	}
 	if (ufs_rd(REG_UTRLDBR)) {
 		con_str("UFS", "requests outstanding: stop");
-		return;
+		return -1;
 	}
 
 	/* Take over the transfer request list: stop, point at ours, run. */
@@ -266,23 +262,52 @@ void test_ufs(int wake)
 	if (ufs_rd(REG_UTRLBA) != (uint32_t)list || ufs_rd(REG_UTRLBAU) != (uint32_t)(list >> 32) ||
 	    !(ufs_rd(REG_UTRLRSR) & 1)) {
 		con_str("UFS", "list base not taken: stop");
-		return;
+		return -1;
 	}
+	return 0;
+}
 
-	uint32_t ocs = 0, st = 0, rc;
+/* START STOP UNIT, power condition ACTIVE, to the UFS Device W-LUN */
+static uint32_t ssu_active(void)
+{
+	/* what Linux ufshcd_set_dev_pwr_mode() sends: power state only, no data */
+	static const uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
+	uint32_t ocs = 0, st = 0;
+	uint32_t rc = scsi(UFS_DEVICE_WLUN, ssu, sizeof(ssu), 0, 0, &ocs, &st);
+	con_hex2("SSU act", "rc=", rc << 16 | ocs << 8 | st, "sense=", last_sense);
+	delay_ms(10);
+	return rc;
+}
+
+int ufs_wake(void)
+{
+	if (takeover())
+		return -1;
+	if (!tur("TUR lun0", 0))
+		return 0;
+	if (ssu_active())
+		return -1;
+	return tur("TUR lun0", 0) ? -1 : 0;
+}
+
+void test_ufs(int wake)
+{
+	uint32_t cap = ufs_rd(REG_CAP), hcs = ufs_rd(REG_HCS), hce = ufs_rd(REG_HCE);
+	con_hex2("UFS", "ver=", ufs_rd(REG_VER), "cap=", cap);
+	con_hex2(" ", "hce=", hce, "hcs=", hcs);
+	con_hex2(" ", "is=", ufs_rd(REG_IS), "rsr=", ufs_rd(REG_UTRLRSR));
+	con_hex2(" ", "utrlba=", ufs_rd(REG_UTRLBA), "hi=", ufs_rd(REG_UTRLBAU));
+	con_hex2(" ", "dbr=", ufs_rd(REG_UTRLDBR), "nutrs=", (cap & 0x1f) + 1);
+	if (takeover())
+		return;
+
+	uint32_t rc;
 	/* rc = stage << 16 | OCS << 8 | SCSI status; sense = key << 16 | ASC << 8 | ASCQ */
 	rc = tur("TUR lun0", 0);
 	tur("TUR lun1", DATA_LUN);
 	tur("TUR dev", UFS_DEVICE_WLUN);
 	if (wake && rc) {
-		/*
-		 * START STOP UNIT, power condition ACTIVE, to the UFS Device W-LUN:
-		 * what Linux ufshcd_set_dev_pwr_mode() sends. Power state only.
-		 */
-		static const uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
-		rc = scsi(UFS_DEVICE_WLUN, ssu, sizeof(ssu), 0, 0, &ocs, &st);
-		con_hex2("SSU act", "rc=", rc << 16 | ocs << 8 | st, "sense=", last_sense);
-		delay_ms(10);
+		ssu_active();
 		tur("TUR lun0", 0);
 		tur("TUR lun1", DATA_LUN);
 	}

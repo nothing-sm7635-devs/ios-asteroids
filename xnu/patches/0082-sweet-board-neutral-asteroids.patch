@@ -1,0 +1,298 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -49,6 +49,27 @@ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
+ extern int hz;
+ static void sweet_log_start(void);
++
++/* The device tree root names the board: "xiaomi,sweet" is the SM7150 phone. */
++static bool
++sweet_board_is_sm7150(void)
++{
++	DTEntry root;
++	void const *prop;
++	unsigned int size;
++	if (SecureDTLookupEntry(NULL, "/", &root) != kSuccess ||
++	    SecureDTGetProperty(root, "compatible", &prop, &size) != kSuccess) {
++		return false;
++	}
++	const char *s = prop, *end = s + size;
++	while (s < end) {
++		if (strncmp(s, "xiaomi,sweet", end - s) == 0) {
++			return true;
++		}
++		s += strnlen(s, end - s) + 1;
++	}
++	return false;
++}
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+@@ -656,6 +677,14 @@ sweet_ufs_init(void)
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
+ 	sweet_sample_start();
++	/*
++	 * Keys, touch and USB drive SM7150 blocks at fixed physical addresses
++	 * (SPMI, GENI SE7, GCC, TLMM, RPMh, DWC3/QUSB2): never on another SoC.
++	 */
++	if (!sweet_board_is_sm7150()) {
++		printf("SWEET UFS: not sweet, no keys/touch/USB drivers\n");
++		return 0;
++	}
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -38,13 +38,13 @@ const char * gIOKernelConfigTables =
+     "   {"
+     "     'IOClass'         = SweetPlatformExpert;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+-    "     'IONameMatch'     = 'xiaomi,sweet';"
++    "     'IONameMatch'     = ('xiaomi,sweet', 'nothing,asteroids');"
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
+     "   {"
+     "     'IOClass'         = SweetCPU;"
+     "     'IOProviderClass' = IOPlatformDevice;"
+-    "     'IONameMatch'     = 'qcom,kryo470';"
++    "     'IONameMatch'     = ('qcom,kryo470', 'qcom,kryo-sm7635');"
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
+     "   {"
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -347,6 +347,9 @@ arm_init(
+ 	DTEntry chosen = NULL;
+ 	unsigned int dt_entry_size = 0;
+ 
++#if defined(SWEET)
++	sweet_early_setup(args);
++#endif
+ 	sweet_early_mark(1, "arm_init entered (MMU on)");
+ 
+ 	arm_setup_pre_sign();
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1843,7 +1843,8 @@ sweet_early_map_final(void)
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+ 	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	/* the same 32MB block start.s mapped VA=PA (boot_args framebuffer) */
++	*slot = sweet_early_fb_block() | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -514,11 +514,30 @@ LEXT(start_first_cpu)
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	/*
++	 * Stage 0: white 64x32 band, no stack or page tables needed, at the
++	 * bottom of the boot_args framebuffer, clipped (like sweet_early.c) to
++	 * the 32MB block that holds its start. boot_args (x20, physical):
++	 * Video.v_baseAddr at 40, v_rowBytes at 56, v_height at 72.
++	 */
++	ldr		x0, [x20, #40]
++	ldr		x4, [x20, #56]
++	ldr		x6, [x20, #72]
++	cbz		x0, Lsweet_mark_done
++	cmp		x4, #(4 * 64)
++	b.lo	Lsweet_mark_done
++	and		x7, x0, #(ARM_TT_L2_OFFMASK)
++	mov		x8, #(ARM_TT_L2_SIZE)
++	sub		x8, x8, x7
++	udiv	x8, x8, x4
++	cmp		x6, x8
++	csel	x6, x6, x8, lo
++	cmp		x6, #64
++	b.lo	Lsweet_mark_done
++	sub		x6, x6, #32
++	madd	x0, x6, x4, x0
+ 	mov		w1, #-1
+ 	mov		x2, #32
+-	mov		x4, #4320
+ Lsweet_mark_row:
+ 	mov		x3, #64
+ 	mov		x5, x0
+@@ -530,6 +549,7 @@ Lsweet_mark_pixel:
+ 	subs	x2, x2, #1
+ 	b.ne	Lsweet_mark_row
+ 	dsb		sy
++Lsweet_mark_done:
+ #endif
+ 
+ 	// Set low reset vector before attempting any loads
+@@ -680,19 +700,22 @@ Lkernelcache_base_found:
+ 
+ #if defined(SWEET)
+ 	/*
+-	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
+-	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
+-	 * create_bootstrap_mapping would replace the RAM L2 table.
+-	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+-	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
++	 * Splash framebuffer (boot_args Video.v_baseAddr, x20 + 40): the 32MB
++	 * block holding its start, Normal-NC, in the EXISTING V=P L2 table.
++	 * Framebuffer and RAM use L1 index 0 (both below 64GB); another call
++	 * to create_bootstrap_mapping would replace the RAM L2 table. With
++	 * 16K pages the first V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
+ 	 */
+-	MOV64	x10, 0x9c000000
++	ldr		x10, [x20, #40]
++	cbz		x10, Lsweet_fb_map_done
++	and		x10, x10, #(~ARM_TT_L2_OFFMASK)
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+ 	lsr		x12, x12, #(ARM_TT_L2_SHIFT)
+ 	add		x13, x25, #(2 * PGBYTES)
+ 	str		x11, [x13, x12, lsl #TTE_SHIFT]
++Lsweet_fb_map_done:
+ #endif
+ 
+ 	/* Ensure TTEs are visible */
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -1,21 +1,27 @@
+ /*
+- * Redmi Note 10 Pro bootstrap console. No allocation, locks, ADT parsing or
+- * per-CPU state: panic() can reach this before a current thread exists.
+- * start.s maps the splash framebuffer VA=PA as Normal Non-Cacheable memory.
+- * arm_vm_init installs a reserved kernel VA alias before removing TTBR0;
+- * retain this console until the normal framebuffer serial console is ready.
++ * Bootstrap console (Redmi Note 10 Pro, Nothing Phone (3a)). No allocation,
++ * locks, ADT parsing or per-CPU state: panic() can reach this before a current
++ * thread exists. The geometry comes from boot_args (the shim's framebuffer);
++ * the sweet values below only apply until sweet_early_setup() runs.
++ * start.s maps the 32MB block holding the framebuffer start VA=PA as Normal
++ * Non-Cacheable memory; arm_vm_init installs a reserved kernel VA alias of the
++ * same block before removing TTBR0. Only rows inside that block are used.
++ * Retain this console until the normal framebuffer serial console is ready.
+  */
+ #include <arm64/sweet_early.h>
+ 
+ #if defined(SWEET)
+ #include <stdint.h>
+ #include <kern/misc_protos.h>
++#include <arm64/proc_reg.h>
+ 
++static uint64_t early_phys = 0x9c000000;
+ static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
++static unsigned int early_width = 1080u, early_height = 2400u, early_stride = 4320u / 4;
+ #define EARLY_FB early_fb
+-#define EARLY_WIDTH 1080u
+-#define EARLY_HEIGHT 2400u
+-#define EARLY_STRIDE (4320u / 4)
++#define EARLY_WIDTH early_width
++#define EARLY_HEIGHT early_height
++#define EARLY_STRIDE early_stride
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+ #define EARLY_CELL_H (16u * EARLY_SCALE)
+@@ -125,11 +131,42 @@ sweet_early_panic(const char *fmt, va_list *args)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
+ 
++/*
++ * Take the framebuffer from boot_args (physical, 32 bpp); start.s mapped the
++ * 32MB block holding its start, so clip the height to the rows inside it.
++ * Same arithmetic as the stage-0 band in start.s.
++ */
++void
++sweet_early_setup(const boot_args *args)
++{
++	uint64_t base = args->Video.v_baseAddr, stride = args->Video.v_rowBytes;
++	if (!base || (args->Video.v_depth & kBootVideoDepthMask) != 32 || stride < 4 * 64 || args->Video.v_height < 64) {
++		return;
++	}
++	uint64_t rows = (ARM_TT_L2_SIZE - (base & ARM_TT_L2_OFFMASK)) / stride;
++	uint64_t height = args->Video.v_height < rows ? args->Video.v_height : rows;
++	uint64_t width = args->Video.v_width < stride / 4 ? args->Video.v_width : stride / 4;
++	if (height < 64) {
++		return;
++	}
++	early_phys = base;
++	early_fb = (volatile uint32_t *)(uintptr_t)base;
++	early_width = (unsigned int)width;
++	early_height = (unsigned int)height;
++	early_stride = (unsigned int)(stride / 4);
++}
++
++uint64_t
++sweet_early_fb_block(void)
++{
++	return early_phys & ~(uint64_t)ARM_TT_L2_OFFMASK;
++}
++
+ void
+ sweet_early_relocate(uint64_t base)
+ {
+ 	sweet_early_mark(8, "leaving bootstrap TTBR0");
+-	early_fb = (volatile uint32_t *)(uintptr_t)base;
++	early_fb = (volatile uint32_t *)(uintptr_t)(base + (early_phys & ARM_TT_L2_OFFMASK));
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	sweet_early_mark(9, "kernel framebuffer VA live");
+ }
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -7,6 +7,9 @@
+ #include <stdint.h>
+ 
+ #if defined(SWEET)
++#include <pexpert/arm64/boot.h>
++void sweet_early_setup(const boot_args *args);
++uint64_t sweet_early_fb_block(void);
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -20,6 +20,11 @@ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS,
+ #if defined(SWEET)
+ /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
+ SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++/* sweet default; the Nothing Phone (3a) GIC (with VLPI frames) uses 0x40000 */
++SECURITY_READ_ONLY_LATE(vm_offset_t) sweet_gicr_stride = GICR_PE_SIZE;
++#define GICR_STRIDE sweet_gicr_stride
++#else
++#define GICR_STRIDE GICR_PE_SIZE
+ #endif
+ 
+ static vm_offset_t gicd_base;
+@@ -56,7 +61,7 @@ find_gicr_pe_base()
+ 	// We only care about aff1 and aff0
+ 	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+ 
+-	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
++	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_STRIDE) {
+ 		vm_offset_t gicr_pe_base = gicr_base + offset;
+ 		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
+ 		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+@@ -117,6 +122,20 @@ pe_init_fiq()
+ 			sweet_vtimer_intid = intid;
+ 		}
+ 		kprintf("SWEET GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
++
++		void const *stride_prop;
++		unsigned int stride_size;
++		if (SecureDTGetProperty(entry, "redistributor-stride", &stride_prop, &stride_size) == kSuccess) {
++			if (stride_size != sizeof(uint32_t)) {
++				panic("%s: invalid redistributor-stride size %u", __func__, stride_size);
++			}
++			uint32_t stride = *(const uint32_t *)stride_prop;
++			if (stride != 0x20000 && stride != 0x40000) {
++				panic("%s: redistributor stride 0x%x is neither GICv3 nor GICv4", __func__, stride);
++			}
++			sweet_gicr_stride = stride;
++		}
++		kprintf("SWEET GIC: redistributor stride 0x%lx\n", (unsigned long)sweet_gicr_stride);
+ #endif
+ 
+ 		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();

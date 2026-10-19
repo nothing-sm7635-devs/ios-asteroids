@@ -9,3 +9,5 @@ xnu/out/
 xnu/out-*/
 __pycache__/
 asteroids/probe/out/
+asteroids/out/
+asteroids/shim/out/

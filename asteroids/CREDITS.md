@@ -26,6 +26,15 @@ asteroids`, `shim/`, `probe/fbcon.c` (MDSS SSPP offsets), `probe/ufs.c` and
 `asteroids/NOTES.md` come from the phone's live device tree and from
 `sm7635-devicetrees` (Qualcomm volcano DTSI files, Nothing `noth/asteroids-*.dtsi`).
 
+## Kernel code written from hardware documentation
+
+`xnu/patches/0083-sweet-asteroids-keys.patch` (`bsd/dev/sweet_keys.c`, part of the
+APSL kernel) adds the asteroids key layout to sweet's own driver. It copies no
+GPL code: only register addresses, offsets and bit positions (hardware facts)
+from the live device tree and from the SPMI arbiter v7 layout as documented by
+Linux `drivers/spmi/spmi-pmic-arb.c` (APID map at core + 0x2000, owner table at
+cnfg, observer stride 0x20), verified on the phone with `probe/probe7.c`.
+
 ## Other projects
 
 | Project | License | Use |

@@ -87,6 +87,14 @@ the session scratchpad, cache `research/ipsw-x/dyld/20H392__iPhone10,3_6/`
 unslid addr = addr - slide (slide from the "SMP proc[pid] slide" line).
 **root3** (10:37:52 UTC) = root2 + `sweetsample=SpringBoard,lsd,backboardd`; let it
 run ~30 min undisturbed, then pull the log: lsd stacks changing = progress.
+Reference (2026-10-19): https://github.com/MakrSas/ios-topaz = fork of ios-sweet for
+the Redmi Note 12 4G (topaz, SM6225), 110 patches, lock screen in ~3 min on 4 A73.
+Its README: "the first boot spends a while on the Apple logo (SpringBoard waits for
+LaunchServices to build its database)" -> our root2 stack is that step; theirs ends
+in ~3 min, ours did not within 13 min. Same ABL v4-ramdisk drop / payload after
+_end. Root tools identical to ours. Touch there: FocalTech FT5452 on I2C (0x38) via
+sweet's GENI I2C code (patches 0083/0086/0090); ours is FocalTech on SPI. No LICENSE
+in either repo: use findings, ask before copying code.
 
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 

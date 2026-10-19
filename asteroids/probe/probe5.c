@@ -599,6 +599,18 @@ void shim_main(uint64_t dtb)
 		con_str("GPI", "channel setup failed: stop");
 		goto out;
 	}
+	/* run 2 reset the phone at the first doorbell: show the SMMU first */
+	stage = "smmu";
+	gpi_smmu_check();
+	int cd = con_row();
+	for (unsigned s = 15; s > 0; s--) {
+		con_set_row(cd);
+		con_dec("DOORBELL in", s);
+		smc(GH_WDT_PET, 0, 0, 0);
+		delay_ms(1000);
+	}
+	con_set_row(cd);
+	con_str("DOORBELL", "now                ");
 #endif
 
 	stage = "fts";

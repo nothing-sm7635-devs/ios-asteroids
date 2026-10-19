@@ -140,6 +140,40 @@ static void ring_ctx(uintptr_t cntxt, uintptr_t db, const struct tre *ring, uint
 	wr32(db + 4, 0);	/* doorbell MSB = ring base MSB */
 }
 
+/* apps SMMU (qsmmu-v500, arm-smmu.h GR0 layout), read only */
+#define SMMU		0x15000000UL
+#define SMMU_sCR0	0x000
+#define SMMU_ID0	0x020
+#define SMMU_sGFSR	0x048
+#define SMMU_SMR(n)	(0x800 + 4 * (n))
+#define SMMU_S2CR(n)	(0xc00 + 4 * (n))
+
+void gpi_smmu_check(void)
+{
+	static const uint32_t sids[3] = { 0x576, 0x60, 0x1c00 };	/* GPI, UFS, MDP handoff */
+	uint32_t scr0 = rd32(SMMU + SMMU_sCR0), id0 = rd32(SMMU + SMMU_ID0);
+	unsigned nsmr = id0 & 0xff, exid = (scr0 >> 3) & 1;
+	con_hex2("SMMU", "scr0=", scr0, "id0=", id0);
+	con_hex2(" ", "gfsr=", rd32(SMMU + SMMU_sGFSR), "nsmr=", nsmr);
+	for (unsigned k = 0; k < 3; k++) {
+		uint32_t idx = 0xffff, s2cr = 0, smr = 0;
+		for (unsigned n = 0; n < nsmr && idx == 0xffff; n++) {
+			uint32_t r = rd32(SMMU + SMMU_SMR(n)), c = rd32(SMMU + SMMU_S2CR(n));
+			uint32_t valid = exid ? (c >> 10) & 1 : r >> 31;
+			uint32_t id = r & (exid ? 0xffff : 0x7fff);
+			uint32_t mask = (r >> 16) & (exid ? 0xffff : 0x7fff);
+			if (valid && ((sids[k] ^ id) & ~mask) == 0) {
+				idx = n;
+				s2cr = c;
+				smr = r;
+			}
+		}
+		con_hex2(" sid", "id/n=", sids[k] << 16 | idx, "s2cr=", s2cr);
+		if (idx != 0xffff)
+			con_hex2(" ", "smr=", smr, 0, 0);
+	}
+}
+
 void gpi_dump(void)
 {
 	con_hex2("GPII0", "ch0=", rd32(CH_CNTXT(0)), "ch1=", rd32(CH_CNTXT(1)));

@@ -7,6 +7,8 @@ int gpi_init(void);
 int gpi_spi_xfer(const uint8_t *tx, uint8_t *rx, unsigned n);
 /* (events seen << 16) | TX completion code << 8 | RX code, last transfer */
 uint32_t gpi_status(void);
+/* Print sCR0 and the SMR/S2CR matching GPI, UFS and MDP stream IDs. */
+void gpi_smmu_check(void);
 /* Print GPII / channel state (after a failure). */
 void gpi_dump(void);
 

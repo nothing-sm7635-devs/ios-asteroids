@@ -78,6 +78,14 @@ my event loop: it spun forever if the HW event RP is outside the ring (no bound
 check) - or a stalled register read. Fixed (17:14): RP sanity check (badrp=),
 "GPI up" also shows ch1/evrp/ring addresses, a one-time "GPI db" line after the
 first doorbell, gpi_dump when the chip ID is not 0x56.
+**Probe 8 run 2 (17:15, photo):** "GPI up" ch0=0x1020000A ch1=0x10200102 (both
+STARTED), ev=0x10110002, evrp=0xA8004E00 = ring base (ring 0xA8004E00, tx ring
+0xA8005100), then **the phone reset before the "GPI db" line**, i.e. at the
+doorbell writes (or the RP read right after). Guess: the GPI's first DMA (TRE
+fetch, SID 0x576) faults at the apps SMMU or on the QUP0->DDR NoC path and
+that is fatal. Run 3 build (17:16): read-only apps SMMU dump after "GPI up"
+(sCR0, ID0, sGFSR, SMR/S2CR matching SIDs 0x576 GPI / 0x60 UFS / 0x1c00 MDP),
+then a 15 s countdown before the doorbell.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

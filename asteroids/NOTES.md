@@ -56,6 +56,9 @@ rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30).
 (`research/flash-userdata-a1.log`). LineageOS data is gone; to restore Android:
 `fastboot -w`. userdata = iOS root a1 until the first rw boot changes it.
 10:09:48 UTC `fastboot boot asteroids/out/root1-boot.img` (sent OKAY).
+User report (observed): console scrolled (root mounted from LUN 0 userdata),
+then **the Apple logo appeared** (~10:15 UTC) - iOS userland drawing through
+AppleCLCD on asteroids. Waiting for the lock screen (sweet: ~4-5 min on the logo).
 
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 

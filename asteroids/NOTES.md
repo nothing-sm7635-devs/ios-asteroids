@@ -197,6 +197,17 @@ Test plan: CI kernel -> `ASTEROIDS_ALLOW_UFS_WRITES=yes asteroids/build-boot.sh
 KERNEL touch1 <root3 args>` -> boot to lock screen; log lines "SWEET TOUCH:";
 expect "FocalTech id=56:72 fw=0x41" then "SWEET HID: touch 0 down at x,y".
 
+## >>> 2026-10-19 ~18:50 local: TOUCH + BUTTONS WORK IN iOS <<<
+
+Kernel: CI build with 0083 (keys) + 0084 (touch over GPI DMA), sha256 76227c04...b43fb
+(`xnu/out/kernel.development.sweet`). Boot image `asteroids/out/touch1-boot.img`
+(root3 args), booted 13:15:42 UTC. User report (observed): lock screen, power /
+volume / AI(Home) keys work, touchscreen works (unlock, navigation, Settings).
+Known issue: Settings > General > About does not open. Likely the sweet issue
+(NOTES.md: Preferences SIGTRAP in PodcastsUI, force-unwrap of
+URL.volumeTotalCapacity, nil on the HFS+ root) - unverified on asteroids; needs
+the kernel log (recovery + tools/sweet-log-pull.sh) to confirm.
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

@@ -1,0 +1,67 @@
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -9,6 +9,51 @@
+ #include <IOKit/IOPlatformExpert.h>
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
++#include <pexpert/pexpert.h>
++#include <kern/thread_call.h>
++#include <kern/clock.h>
++
++/*
++ * Diagnostic: configd's InterfaceNamer waits for the IOKit registry to go
++ * quiet (no busy services) and otherwise only gives up after 300 s, which
++ * blocks e.g. Settings > About. sweetbusy=N (default 120 s, 0 = off) logs
++ * every service that is still busy N and 2N seconds after this start.
++ */
++static thread_call_t sweet_busy_call;
++static uint32_t sweet_busy_secs = 120;
++static int sweet_busy_round;
++
++static void
++sweet_busy_dump(thread_call_param_t p0 __unused, thread_call_param_t p1 __unused)
++{
++	IOService *root = IOService::getServiceRoot();
++	unsigned busy = 0;
++	IOLog("SWEET BUSY: round %d, root busy=%u\n", sweet_busy_round + 1,
++	    root ? (unsigned)root->getBusyState() : 0u);
++	IORegistryIterator *iter = IORegistryIterator::iterateOver(gIOServicePlane,
++	    kIORegistryIterateRecursively);
++	if (iter) {
++		IORegistryEntry *entry;
++		while ((entry = iter->getNextObject())) {
++			IOService *service = OSDynamicCast(IOService, entry);
++			if (!service || service == root || !service->getBusyState()) {
++				continue;
++			}
++			IOService *provider = service->getProvider();
++			IOLog("SWEET BUSY: %s (%s) busy=%u provider=%s\n", service->getName(),
++			    service->getMetaClass()->getClassName(), (unsigned)service->getBusyState(),
++			    provider ? provider->getName() : "-");
++			busy++;
++		}
++		iter->release();
++	}
++	IOLog("SWEET BUSY: round %d, %u busy services\n", sweet_busy_round + 1, busy);
++	if (++sweet_busy_round < 2) {
++		uint64_t deadline;
++		clock_interval_to_deadline(sweet_busy_secs, NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(sweet_busy_call, deadline);
++	}
++}
+ 
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+@@ -31,6 +76,12 @@ SweetPlatformExpert::start(IOService *provider)
+ 	}
+ 	registerService();
+ 	IOLog("SWEET: platform expert registered\n");
++	PE_parse_boot_argn("sweetbusy", &sweet_busy_secs, sizeof(sweet_busy_secs));
++	if (sweet_busy_secs && (sweet_busy_call = thread_call_allocate(sweet_busy_dump, NULL))) {
++		uint64_t deadline;
++		clock_interval_to_deadline(sweet_busy_secs, NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(sweet_busy_call, deadline);
++	}
+ 	return true;
+ }
+ 

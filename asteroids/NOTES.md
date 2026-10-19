@@ -229,6 +229,15 @@ IOService root + IOServiceGetBusyState, then a 300 s timer (WaitStackTimeout) th
 writes Timeout; any earlier failure returns without a timer (logs only to os_log).
 So: IOKit never quiet AND (setup failed or plugin thread stuck). touch3 (13:29:43
 UTC) samples configd + Preferences to see which.
+**touch3 result (`logs/asteroids-touch3.txt`):** About opened after ~6 min (user). configd
+idle in all 3 samples (every thread in its CFRunLoop): InterfaceNamer set up fine and
+its 300 s WaitStackTimeout timer released Settings. **Root cause: the IOKit registry
+never goes quiet on asteroids** (some service stays busy). **xnu 0085**
+(`0085-sweet-busy-services.patch`, applies on 0084 + blacktop, NOT built): SweetPlatformExpert
+logs "SWEET BUSY: <name> (<class>) busy=N provider=..." for every busy IOService
+sweetbusy=N s (default 120, 0 off) and 2N s after start. Workaround if needed:
+WaitStackTimeout (seconds) in the InterfaceNamer bundle Info.plist of the root image
+(ifnamer.c exec_InterfaceNamer reads it).
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

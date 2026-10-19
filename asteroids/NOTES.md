@@ -238,6 +238,18 @@ logs "SWEET BUSY: <name> (<class>) busy=N provider=..." for every busy IOService
 sweetbusy=N s (default 120, 0 off) and 2N s after start. Workaround if needed:
 WaitStackTimeout (seconds) in the InterfaceNamer bundle Info.plist of the root image
 (ifnamer.c exec_InterfaceNamer reads it).
+**busy1 (CI kernel with 0085, sha256 d10fc85a...ac096, booted 15:09:44 UTC,
+`logs/asteroids-busy1.txt`): "SWEET BUSY: round 1/2, root busy=1, 0 busy services"** -
+no driver is busy; the root holds its own count. Cause: StartIOKitMatching()
+(iokit/Kernel/IOStartIOKit.cpp) adds root->adjustBusy(1) when
+OSKext::iokitDaemonAvailable() (true unless -restore), dropped only by
+IOService::iokitDaemonLaunched() when kernelmanagerd/kextd reports in. The iOS
+16.7 root has no kernelmanagerd/kextd (OS dmg checked, launchd.plist has no job),
+so the registry is never quiet. Affects sweet too (same macOS-config kernel).
+**xnu 0086** (`0086-sweet-no-iokit-daemon-busy.patch`, applies on 0085 + blacktop,
+NOT built): skip that busy count on ARM64_BOARD_CONFIG_SWEET only (forcing
+iokitDaemonAvailable() false would make kext requests panic, OSKext.cpp:10202).
+Expect: About opens at once; "SWEET BUSY: root busy=0".
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

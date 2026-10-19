@@ -1,0 +1,26 @@
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -187,7 +187,7 @@ StartIOKitMatching(void)
+ 		panic("Failed to start IOService matching");
+ 	}
+ 
+-#if !NO_KEXTD
++#if !NO_KEXTD && !defined(ARM64_BOARD_CONFIG_SWEET)
+ 	if (OSKext::iokitDaemonAvailable()) {
+ 		/* Add a busy count to keep the registry busy until the IOKit daemon has
+ 		 * completely finished launching. This is decremented when the IOKit daemon
+@@ -197,6 +197,14 @@ StartIOKitMatching(void)
+ 		IOService::getServiceRoot()->adjustBusy(1);
+ 	}
+ #endif
++	/*
++	 * SWEET (macOS config, iOS userland): there is no IOKit daemon
++	 * (kernelmanagerd/kextd) to ever send the "launched" message, so that busy
++	 * count was never dropped: the registry never went quiet and configd's
++	 * InterfaceNamer only gave up after its 300 s timeout (Settings > About
++	 * hung in SCNetworkInterfaceCopyAll). Seen with xnu 0085 "SWEET BUSY:
++	 * root busy=1, 0 busy services".
++	 */
+ }
+ 
+ void

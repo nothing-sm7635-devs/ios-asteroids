@@ -175,6 +175,28 @@ GPI ring/event traffic with 0x576. Commit with these results: see git log.
 Open: interrupts (GPI GIC SPI 0x1b1, touch GPIO 19 falling edge) instead of
 polling; test without the sCR0 change.
 
+**xnu 0084 (2026-10-19 ~17:55, written, NOT built, NOT booted):**
+`xnu/patches/0084-sweet-asteroids-touch.patch` applies on 0001-0083 (checked in a
+clean `tools/xnu-tree.sh` worktree, files MATCH). New `bsd/dev/sweet_touch_asteroids.c`
+= probe 8 run 10 sequence in a kernel thread (starts `sweettouchdelay` s after UFS
+init, default 45): TLMM, RPMh v3 AMC ldob11/ldob22/BCM SN3, GCC, reset, SMMU
+SMR for 0x576 + 0x563 -> UFS's S2CR, sCR0 GFRE|GFIE cleared (boot-arg
+`sweettouchgf=1` keeps them: the test of whether it is still needed), SE0 GSI,
+GPII 0, FocalTech chip ID, then polls the report (IRQ GPIO 19 low / while
+touched / every 100 ms, 10 ms tick) -> `sweet_hid_touch()`. Differences from the
+probe (untested): DMA page from kmem_alloc_contig above 4 GiB (TRE/ring MSBs
+programmed), cache clean/invalidate around every frame, any frame timeout stops
+the driver (prints GPI state). Boot-args: `sweettouch=0`, `sweettouchdiv=N`
+(SPI = 19.2 MHz / N, default 20). SweetHID.cpp: SweetHIDTouch takes the panel
+size from the boot framebuffer (1080x2392 here; sweet still 1080x2400).
+sweet_ufs.c calls `sweet_touch_asteroids_init()` on non-sweet boards.
+Syntax-checked locally only with stub headers (clang -Weverything minus XNU's
+-Wno list: clean apart from C++-compat notes that sweet drivers share). No `gh`
+on this host: CI needs a push of xnu/patches to main (user's call).
+Test plan: CI kernel -> `ASTEROIDS_ALLOW_UFS_WRITES=yes asteroids/build-boot.sh
+KERNEL touch1 <root3 args>` -> boot to lock screen; log lines "SWEET TOUCH:";
+expect "FocalTech id=56:72 fw=0x41" then "SWEET HID: touch 0 down at x,y".
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

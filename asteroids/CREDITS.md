@@ -36,6 +36,15 @@ from the live device tree and from the SPMI arbiter v7 layout as documented by
 Linux `drivers/spmi/spmi-pmic-arb.c` (APID map at core + 0x2000, owner table at
 cnfg, observer stride 0x20), verified on the phone with `probe/probe7.c`.
 
+`xnu/patches/0084-sweet-asteroids-touch.patch` (`bsd/dev/sweet_touch_asteroids.c`,
+`SweetHID.cpp` panel size, APSL kernel) re-implements the sequence verified by
+`probe/gpi.c` + `probe5.c -DPROBE8` in the kernel's own style. It copies no GPL
+code: only register offsets, bit positions, TRE/event layouts and the order of
+operations documented by Linux `msm_gpi.c`, `msm_gpi_mmio.h`, `msm_gpi.h`,
+`spi-msm-geni.c`, `qcom-geni-se.c`, `rpmh-rsc.c`, `cmd-db.c`, `bcm-voter.c`,
+`focaltech_spi_v2.c` (CRC-16/KERMIT is a standard algorithm) and
+`focaltech_core.c` (report layout).
+
 ## Other projects
 
 | Project | License | Use |

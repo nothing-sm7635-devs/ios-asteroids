@@ -338,6 +338,19 @@ func_1aaf39c64 -> CFDictionaryCreate with a nil value (missing launch-time value
 relaunch churn. Next: heap strings of a PlugInKit extension crash (sweetscan=KonaSynthesizer)
 to see the missing key; try a non-Metal wallpaper (Photos / Gradient / Emoji) to separate
 GPU-less rendering from our display path.
+**pk1 (18:12 UTC, `logs/asteroids-pk1.txt`, sweetscan=KonaSynthesizer,ScreenTimeWidget):**
+user: Gradient wallpaper fine on the lock screen but goes black randomly and on the widget
+page; Emoji fine on the lock screen, black home screen after unlock. Crash loops: AegirPoster
+42x, SiriTTSSynthesizer / MacinTalkAUSP / KonaSynthesizer 12x, BatteriesWidget 1x. Heap
+string: NSInternalInconsistencyException **"plugin has invalid sandbox or container: error 2
+path ?"** - PlugInKit (func_1aaf39c64) calls sandbox_container_path_for_pid(getpid()), our
+Sandbox stand-in (sweet_amfi.c, xnu 0050) answers op 4 with ENOENT. libsystem_sandbox:
+op 4 arg = { int64 pid, 0, buf, len, 0 }; spawnattrs: u32 container length at 0x0c, path at
+0x50 (<= 1024), profile name at 0x10. **xnu 0088** (`0088-sweet-sandbox-containers.patch`,
+applies on 0087 + blacktop, NOT built): mpo_cred_check_label_update_execve records the
+container path from the "Sandbox" spawn attributes per process (unique ID, 256-entry table)
+and op 4 returns it; logs "SWEET Sandbox: <name>[pid] container <path>" (first 32). No
+re-flash needed (runtime only).
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

@@ -274,6 +274,20 @@ bluetoothd/fairplayd relaunch loops.
 CPU0 Cortex-A520 (MIDR 0x410FD801) 1593 MHz x3; CPU4 Cortex-A720 (0x410FD811)
 2351 / 2400 / 2400 MHz; PMCR 0xA041, PMU usable at EL1 under Gunyah. So (2) is
 ruled out at handoff (not yet measured while iOS runs).
+**fix1 (CI kernel with 0086, sha256 5652d5db...19ca7, 15:41 UTC, `logs/asteroids-fix1.txt`):
+"SWEET BUSY: root busy=0, 0 busy services" -> registry quiet (0086 works).** About: slow on
+the first open, instant afterwards (user). PosterBoard still asserts once.
+PosterBoard RE (`ipsw dyld disass --image PosterBoard`): ivar self+0x98 = switcher
+configuration, written only by setupSwitcherConfigurationForFirstTime and by the lazy getter
+`_stateLock_switcherConfiguration` (-> `_stateLock_buildSwitcherConfigurationWithContext:`);
+flag self+0xe9 set only in `_stateLock_updateExtensions:...` right after the first-time setup.
+Many callers use the getter (switcherConfiguration, _stateLock_activeConfiguration, snapshot
+fetches, ...): if any runs before the first extension update, the config exists and the
+setup asserts. Hypothesis (unverified): poster extensions are not known when the data store
+starts here, so its first update comes late. **assetsd** (Photos) aborts on every launch
+(5/5): uncaught ObjC exception in a dispatch block (objc_terminate -> abort), reason not
+logged. fix2 (15:51 UTC) = fix1 + `sweetscan=assetsd,PosterBoard sweetbusy=0` to print
+heap strings (exception reason) at the crash.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

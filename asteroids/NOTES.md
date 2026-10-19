@@ -299,6 +299,11 @@ PhotosUIPrivate PhotosPosterProvider.appex, EmojiPoster/GradientPoster/UnityPost
 discovery (ExtensionKit / pkd, LaunchServices plugin records) returns nothing - probably also why
 there are no widgets. Next: get os_log of pkd/PosterBoard (OS_ACTIVITY_DT_MODE=YES on their
 launchd jobs; stdout reaches the kernel log via the 0048 /dev/null tee) - needs an image a2.
+**a2 built by user (asteroids/mkroot-a2.sh: a1 + tools/launchd-env.py for PosterBoard, pkd,
+lsd, lsd.system, chronod, assetsd), sha256 0b8e4990...; FLASHED (user confirmed) 16:00:02-
+16:05:38 UTC, 24/24 OKAY (`research/flash-userdata-a2.log`). userdata = fresh a2 (first boot
+rebuilds the LS database again). Boot `asteroids/out/dbg1-boot.img` = fix1 args +
+`sweetbusy=0 sweetscan=assetsd,PosterBoard sweetnull=PosterBoard,pkd,lsd,chronod,assetsd`.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

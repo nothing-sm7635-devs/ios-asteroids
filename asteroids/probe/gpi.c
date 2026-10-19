@@ -303,6 +303,57 @@ static void put_tre(struct tre *ring, unsigned *wp, uint32_t d0, uint32_t d1,
 	*wp = (*wp + 1) % RING_N;
 }
 
+static void countdown(const char *what, unsigned secs)
+{
+	int r = con_row();
+	for (unsigned s = secs; s > 0; s--) {
+		con_set_row(r);
+		con_dec(what, s);
+		smc(GH_WDT_PET, 0, 0, 0);
+		delay_ms(1000);
+	}
+	con_set_row(r);
+	con_str(what, "go           ");
+}
+
+/*
+ * Runs 2-6 reset at the first doorbell. Split it, with a pause before each:
+ * DB0 rings TX with no new TRE (register write only), NOP queues one NOP TRE
+ * with IEOT (one TRE fetch + one event write by the GPI, nothing for SE0)
+ * and watches only the event ring in memory for 1 s before reading any
+ * GPI register again.
+ */
+int gpi_stage_test(void)
+{
+	countdown("DB0 in", 3);
+	wr32(CH_DB(0), pa(&tx_ring[tx_wp]));
+	delay_ms(500);
+	con_hex2("DB0 ok", "evrp=", rd32(EV_CNTXT + C_RP_LO), "chrp=", rd32(CH_CNTXT(0) + C_RP_LO));
+
+	countdown("NOP in", 3);
+	put_tre(tx_ring, &tx_wp, 0, 0, 0, 1U << 16 | 1U << 9);	/* NOOP_TRE, ieot */
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr32(CH_DB(0), pa(&tx_ring[tx_wp]));
+	volatile struct tre *e = &ev_ring[ev_rp];
+	uint64_t t0 = now(), end = t0 + rsr("cntfrq_el0");
+	while (!e->d[3] && now() < end)
+		;
+	uint32_t d2 = e->d[2], d3 = e->d[3], us = to_us(now() - t0);
+	con_hex2("NOP ev", "d2=", d2, "d3=", d3);
+	con_hex2(" ", "us=", us, "d0=", e->d[0]);
+	con_hex2(" rp", "ev=", rd32(EV_CNTXT + C_RP_LO), "ch0=", rd32(CH_CNTXT(0) + C_RP_LO));
+	con_hex2(" ", "ch0st=", rd32(CH_CNTXT(0)), "glob=", rd32(GLOB_STTS));
+	if (!d3)
+		return -1;
+	n_ev++;
+	ev_rp = (ev_rp + 1) % RING_N;
+	ev_wp = (ev_wp + 1) % RING_N;
+	wr32(EV_DB, pa(&ev_ring[ev_wp]));
+	wr32(IEOB_CLR, 1);
+	countdown("SPI in", 3);
+	return 0;
+}
+
 /* (n_ev << 16) | tx code << 8 | rx code of the last transfer */
 uint32_t gpi_status(void)
 {

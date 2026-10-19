@@ -11,6 +11,8 @@ uint32_t gpi_status(void);
 void gpi_smmu_check(void);
 /* Route SID 0x576 to UFS's S2CR in a free SMR; 0 if it reads back. */
 int gpi_smmu_route(void);
+/* Doorbell in steps (no TRE, one NOP TRE), pausing before each; 0 if the NOP completed. */
+int gpi_stage_test(void);
 /* Print GPII / channel state (after a failure). */
 void gpi_dump(void);
 

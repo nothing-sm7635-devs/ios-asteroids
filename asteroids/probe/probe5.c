@@ -636,15 +636,12 @@ void shim_main(uint64_t dtb)
 		con_str("BCM", "SN3 vote failed: stop");
 		goto out;
 	}
-	int cd = con_row();
-	for (unsigned s = 5; s > 0; s--) {
-		con_set_row(cd);
-		con_dec("DOORBELL in", s);
-		smc(GH_WDT_PET, 0, 0, 0);
-		delay_ms(1000);
+	stage = "gpi steps";
+	if (gpi_stage_test()) {
+		gpi_dump();
+		con_str("GPI", "NOP TRE gave no event: stop");
+		goto out;
 	}
-	con_set_row(cd);
-	con_str("DOORBELL", "now                ");
 #endif
 
 	stage = "fts";

@@ -114,6 +114,15 @@ Next suspect (guess): NoC. qhm_qup0 is on aggre2_noc -> qnm_aggre2_noc = BCM
 build (17:26): `bcm_on("SN3")` = one AMC command 0x60004001 (commit, valid,
 x=1, y=1) via cmd-db slave 5, before the countdown; the SMMU dump lines were
 dropped (results above) to keep the screen in one page.
+**Probe 8 run 6 (17:28, photo):** SN3 cmd-db addr 0x5001C, AMC ok (s0 0x10101);
+ROUTE as run 5; **reset again at the doorbell**. anoc_2_qtb (TBU for SIDs
+0x400-0x7ff, incl. GPI 0x576; UFS 0x60 is on anoc_1_qtb) votes system_noc
+MASTER_A2NOC_SNOC = SN3 too, so that is covered; no TBU GDSC in the DT.
+Run 7 build (17:30): `gpi_stage_test()` splits the doorbell, 3 s countdown
+before each step: "DB0" = TX doorbell with no new TRE; "NOP" = one NOOP TRE with
+IEOT, then only the event ring in memory is polled (1 s) before any GPI read;
+then "SPI" = the chip-ID transfer. The last label on screen before the reset
+tells which step kills it. Ask the user for a video.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

@@ -1,3 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Derived from GPL-2.0 sources in the Nothing Phone (3a) kernel tree
+ * (sm7635 + sm7635-modules, see asteroids/CREDITS.md):
+ *   RPMh RSC v3 TCS offsets and AMC request sequence  drivers/soc/qcom/rpmh-rsc.c
+ *   cmd-db lookup                                      drivers/soc/qcom/cmd-db.c
+ *   GENI init, FIFO mode and packing                   drivers/soc/qcom/qcom-geni-se.c,
+ *                                                      include/linux/soc/qcom/geni-se.h
+ *   GENI SPI setup and commands                        drivers/spi/spi-geni-qcom.c
+ *   GCC QUP0 clocks, TLMM pins                         drivers/clk/qcom/gcc-volcano.c,
+ *                                                      drivers/pinctrl/qcom/pinctrl-volcano.c
+ *   FocalTech SPI v2 framing, CRC (crc_kermit is a     touchscreen/focaltech_spi_v2.c,
+ *   port of crckermit), power-on/reset order          focaltech_core.c
+ * Copyright (c) 2013-2021, The Linux Foundation.
+ * Copyright (c) 2022-2025, Qualcomm Innovation Center, Inc.
+ * Copyright (c) 2012-2020, FocalTech Systems, Ltd.
+ */
 /*
  * Nothing Phone (3a) probe 5: bring up the FocalTech touch controller by hand
  * and read its chip ID. ABL leaves the whole path off (probe 4): pins not

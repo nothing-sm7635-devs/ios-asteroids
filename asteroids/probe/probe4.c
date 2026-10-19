@@ -1,3 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Derived from GPL-2.0 Linux sources in the Nothing Phone (3a) kernel tree
+ * (sm7635, see asteroids/CREDITS.md): the cmd-db layout and lookup
+ * (drivers/soc/qcom/cmd-db.c, via xnu sweet_rpmh.c), GCC branch/RCG/DFS
+ * registers (drivers/clk/qcom/gcc-volcano.c, clk-rcg2.c), TLMM layout
+ * (drivers/pinctrl/qcom/pinctrl-volcano.c), RSC version register
+ * (drivers/soc/qcom/rpmh-rsc.c) and GENI register offsets
+ * (include/linux/soc/qcom/geni-se.h).
+ * Copyright (c) 2013-2021, The Linux Foundation.
+ * Copyright (c) 2022-2025, Qualcomm Innovation Center, Inc.
+ */
 /*
  * Nothing Phone (3a) probe 4 (read-only): what state does ABL leave the
  * touch path in? FocalTech on QUP0 SE0 SPI (0xa80000), pins GPIO 0-3

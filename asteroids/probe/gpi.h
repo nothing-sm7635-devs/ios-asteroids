@@ -13,6 +13,8 @@ void gpi_smmu_check(void);
 int gpi_smmu_route(void);
 /* Doorbell in steps (no TRE, one NOP TRE), pausing before each; 0 if the NOP completed. */
 int gpi_stage_test(void);
+/* Print the SMMU global fault status and syndromes (SID in syn1). */
+void gpi_smmu_faults(void);
 /* Print GPII / channel state (after a failure). */
 void gpi_dump(void);
 

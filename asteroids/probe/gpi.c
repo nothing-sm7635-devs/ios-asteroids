@@ -145,6 +145,11 @@ static void ring_ctx(uintptr_t cntxt, uintptr_t db, const struct tre *ring, uint
 #define SMMU_sCR0	0x000
 #define SMMU_ID0	0x020
 #define SMMU_sGFSR	0x048
+#define SMMU_sGFSYNR0	0x050
+#define SMMU_sGFSYNR1	0x054
+#define SMMU_sGFSYNR2	0x058
+#define sCR0_GFRE	(1U << 1)
+#define sCR0_GFIE	(1U << 2)
 #define SMMU_SMR(n)	(0x800 + 4 * (n))
 #define SMMU_S2CR(n)	(0xc00 + 4 * (n))
 
@@ -209,7 +214,23 @@ int gpi_smmu_route(void)
 	uint32_t rs = rd32(SMMU + SMMU_SMR(slot)), rc = rd32(SMMU + SMMU_S2CR(slot));
 	con_hex2("ROUTE", "slot=", (uint32_t)slot, "s2cr=", rc);
 	con_hex2(" ", "smr=", rs, "gfsr=", rd32(SMMU + SMMU_sGFSR));
-	return rs == smr && rc == s2cr ? 0 : -1;
+	if (rs != smr || rc != s2cr)
+		return -1;
+	/*
+	 * Run 8 reset once SE0 ran a frame, with the CPU only polling memory.
+	 * Turn global faults into silent RAZ/WI (no abort to the master, no
+	 * interrupt) so a fault leaves its syndrome for gpi_smmu_faults().
+	 */
+	wr32(SMMU + SMMU_sCR0, scr0 & ~(sCR0_GFRE | sCR0_GFIE));
+	__asm__ volatile("dsb sy" ::: "memory");
+	con_hex2(" scr0", "was=", scr0, "now=", rd32(SMMU + SMMU_sCR0));
+	return 0;
+}
+
+void gpi_smmu_faults(void)
+{
+	con_hex2("SMMU", "gfsr=", rd32(SMMU + SMMU_sGFSR), "syn0=", rd32(SMMU + SMMU_sGFSYNR0));
+	con_hex2(" ", "syn1=", rd32(SMMU + SMMU_sGFSYNR1), "syn2=", rd32(SMMU + SMMU_sGFSYNR2));
 }
 
 void gpi_dump(void)
@@ -369,7 +390,9 @@ int gpi_stage_test(void)
 	con_skip();
 	con_skip();
 	con_skip();
-	step("NOP ieob", 0, nop, 1);
+	con_hex2("sCR0", "now=", rd32(SMMU + SMMU_sCR0), "gfsr=", rd32(SMMU + SMMU_sGFSR));
+	/* run 8: NOP (IEOB), LOCK, UNLOCK each wrote an EOB event in ~17 us */
+	(void)nop;
 	step("LOCK", 0, lock, 1);
 	step("UNLOCK", 0, unlock, 1);
 
@@ -385,6 +408,7 @@ int gpi_stage_test(void)
 	configured = 1;
 	int ok = step("SPI tx", 0, (const uint32_t (*)[4])tx, 3);
 	con_hex2(" ", "ch0st=", rd32(CH_CNTXT(0)), "glob=", rd32(GLOB_STTS));
+	gpi_smmu_faults();
 	if (!ok)
 		return -1;
 	countdown("FULL in", 3);

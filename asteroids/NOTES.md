@@ -131,6 +131,16 @@ GPI DMA *writes* (events, RX data) vs SE0 activity as the reset trigger.
 Run 8 build (17:32): screen cleared, steps NOP(IEOB), LOCK, UNLOCK (IEOB: should
 each write an event), then TX-only SPI (config0 + GO TX_ONLY + TX DMA IEOT, no RX),
 each after a 3 s countdown with memory-only polling; then the full-duplex reads.
+**Probe 8 run 8 (17:34, video):** NOP(IEOB), LOCK, UNLOCK each completed with an
+event in memory: d2 0x04000000 (code 4 EOB), d3 0x00220000 (type 0x22, ch 0), 16-18
+us, ch0 RP 0xD10/0xD20/0xD30. **So GPI TRE reads and event writes to DDR work.**
+**Reset at "SPI tx"** (config0 + GO TX_ONLY + TX DMA): froze right after "go",
+CPU only polling memory -> a hardware-side fatal error once SE0 runs a frame.
+Guess: another master/SID (TX data fetch, or SE0/QUP wrapper SID 0x563) faulting
+at the SMMU -> bus error -> TZ reset. Run 9 build (17:36): after routing, sCR0
+GFRE|GFIE cleared (global faults RAZ/WI, no abort/interrupt), sCR0 printed after
+the screen clear, LOCK/UNLOCK kept as event sanity, and after "SPI tx" sGFSR +
+sGFSYNR0/1/2 (syn1 = faulting SID) are printed.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

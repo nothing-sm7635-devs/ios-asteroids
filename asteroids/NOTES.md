@@ -23,9 +23,14 @@ works); VM bootstrap done; no SWEET UFS line (no rd=, storage untouched).
 "debug_log_init: Error!! gPanicBase is still not initialized" also appears
 (as on sweet). The console wrapped once.
 
-Next: `cpus=8` boot (asteroids/out/smp8-boot.img), then decide the root
-filesystem with the user (userdata -> iOS root is destructive; alternative:
-small ramdisk root via mkpayload --ramdisk, rd=md0).
+**15:15: `cpus=8` works** (`asteroids/build-boot.sh ... smp8 debug=0xc serial=3
+cpus=8 keepsyms=1`, photo 15:15): "requested=8 selected=8 (limit=8)"; for
+cpu1-7 "CPU_ON target=0xN00 entry_pa=0x8c148e000 context=N", "PSCI CPU_ON rc=0",
+"mpidr=0xN00 came alive; SGI1 OK"; "8/8 CPUs initialized, SGI1 verified";
+"mcache: 8 CPU(s)"; then the same root wait. No change was needed for Gunyah.
+
+Next: decide the root filesystem with the user (userdata -> iOS root is
+destructive; alternative: small ramdisk root via mkpayload --ramdisk, rd=md0).
 
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 

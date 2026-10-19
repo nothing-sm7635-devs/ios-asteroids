@@ -13,6 +13,7 @@ SPDX tag and the original copyright lines; the license text is in
 | --- | --- | --- | --- |
 | `probe/probe4.c` | GPL-2.0-only | `drivers/soc/qcom/cmd-db.c` (cmd-db layout, via xnu `sweet_rpmh.c`), `drivers/clk/qcom/gcc-volcano.c`, `clk-rcg2.c` (GCC branch / RCG / DFS registers), `drivers/pinctrl/qcom/pinctrl-volcano.c` (TLMM layout), `drivers/soc/qcom/rpmh-rsc.c` (RSC version), `include/linux/soc/qcom/geni-se.h` (GENI offsets) | The Linux Foundation; Qualcomm Innovation Center, Inc. |
 | `probe/probe5.c` | GPL-2.0-only | the above, plus `rpmh-rsc.c` (RSC v3 TCS offsets, AMC request), `drivers/soc/qcom/qcom-geni-se.c` (GENI init, FIFO mode, packing), `drivers/spi/spi-geni-qcom.c` (SPI setup and commands), `sm7635-modules/noth/touchscreen/focaltech_spi_v2.c` (SPI v2 framing; `crc_kermit` ports `crckermit`) and `focaltech_core.c` (power-on and reset order) | The Linux Foundation; Qualcomm Innovation Center, Inc.; FocalTech Systems, Ltd. |
+| `probe/probe7.c` | GPL-2.0-only | `drivers/spmi/spmi-pmic-arb.c` (arbiter v7 APID map, owner table, observer channel, EXT_READL), `drivers/pinctrl/qcom/pinctrl-spmi-gpio.c` (PMIC GPIO registers); structure after xnu `sweet_keys.c` | The Linux Foundation; Qualcomm Technologies, Inc.; Qualcomm Innovation Center, Inc. |
 
 Linking these probes with the project's own files (`common.c`, `fbcon.c`, the
 shim's `start.S`) makes each probe image a combined work under GPL-2.0.

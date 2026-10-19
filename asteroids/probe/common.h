@@ -18,10 +18,31 @@
 #define wsr(r, v) __asm__ volatile("msr " r ", %0" : : "r"((uint64_t)(v)))
 #define isb() __asm__ volatile("isb" ::: "memory")
 
-static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
-static inline uint64_t rd64(uintptr_t a) { return *(volatile uint64_t *)a; }
-static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
-static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
+/*
+ * MMIO as single plain ldr/str: Gunyah emulates trapped devices (the apps
+ * SMMU at least) only from a valid ESR syndrome, which writeback/pair forms
+ * do not give - probe 8 run 4 took an external abort on "ldr w, [x], #4".
+ */
+static inline uint32_t rd32(uintptr_t a)
+{
+	uint32_t v;
+	__asm__ volatile("ldr %w0, [%1]" : "=r"(v) : "r"(a) : "memory");
+	return v;
+}
+static inline uint64_t rd64(uintptr_t a)
+{
+	uint64_t v;
+	__asm__ volatile("ldr %0, [%1]" : "=r"(v) : "r"(a) : "memory");
+	return v;
+}
+static inline void wr32(uintptr_t a, uint32_t v)
+{
+	__asm__ volatile("str %w0, [%1]" : : "r"(v), "r"(a) : "memory");
+}
+static inline void wr8(uintptr_t a, uint8_t v)
+{
+	__asm__ volatile("strb %w0, [%1]" : : "r"(v), "r"(a) : "memory");
+}
 
 struct smc_res {
 	uint64_t a0, a1, a2, a3;

@@ -96,6 +96,16 @@ Conclusion: GPI DMA faults as an unmatched stream; the fault resets the SoC.
 Run 4 build (17:19): `gpi_smmu_route()` copies UFS's S2CR into the highest free
 SMR slot and sets SMR = valid | 0x576 (runtime only), stops if not read back,
 5 s countdown, doorbell. XNU will need the same SMR (or its own CB) for touch.
+**Probe 8 run 4 (17:20, photo): PANIC SYNC in stage smmu**, ESR 0x96000010 (data
+abort, synchronous external abort, read), FAR 0x15000800 (SMR 0), ELR 0xA8002B98 =
+`ldr w12, [x10], #4` in gpi_smmu_route's scan loop (post-indexed). The same SMR
+reads worked in gpi_smmu_check with plain `ldr`. Inference (strong, not verified
+otherwise): **Gunyah traps and emulates the apps SMMU for HLOS** and cannot emulate
+accesses without a valid ISV syndrome (writeback / pair forms) -> injects an
+external abort. Fix (17:22): common.h rd32/wr32/rd64/wr8 are inline-asm plain
+ldr/str. **XNU consequence:** any trapped MMIO (SMMU, maybe others) must use plain
+single-register accessors; check sweet drivers' MMIO helpers before touching the
+SMMU from XNU.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

@@ -207,6 +207,12 @@ Known issue: Settings > General > About does not open. Likely the sweet issue
 (NOTES.md: Preferences SIGTRAP in PodcastsUI, force-unwrap of
 URL.volumeTotalCapacity, nil on the HFS+ root) - unverified on asteroids; needs
 the kernel log (recovery + tools/sweet-log-pull.sh) to confirm.
+Log of touch1 (`logs/asteroids-touch1.txt`, 272358 B): "SWEET KEYS: nothing,asteroids
+arb=0x70010000 apids=896 pon-apid=3 gpio-apid=31 ... home=1", "SWEET TOUCH: ...
+starting in 45 s", RPMh ldob11/ldob22/SN3 done. **No CRASH Preferences** (crashes:
+mediaserverd x2 sig 6, PosterBoard sig 5, driverkitd); Preferences exec'd twice, no
+exit reason logged -> About is probably a hang, not the sweet crash. touch2 (13:22:38
+UTC) = touch1 + `sweetsample=Preferences,SpringBoard` to sample Settings' threads.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

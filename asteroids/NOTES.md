@@ -251,6 +251,22 @@ NOT built): skip that busy count on ARM64_BOARD_CONFIG_SWEET only (forcing
 iokitDaemonAvailable() false would make kext requests panic, OSKext.cpp:10202).
 Expect: About opens at once; "SWEET BUSY: root busy=0".
 
+## Open: no wallpaper/widgets, sluggish (user report 2026-10-19 evening)
+
+**PosterBoard** (draws iOS 16 wallpapers) crashes once on every full boot (touch1-3,
+busy1; sig 5): BSAssert "Invalid condition not satisfying:
+!_stateLock_switcherConfiguration" (PBFPosterExtensionDataStore.m) in
+`-[PBFPosterExtensionDataStore _stateLock_setupSwitcherConfigurationForFirstTime]`,
+called from `_stateLock_updateExtions:...` when the in-memory ivar byte self+0xe9
+(first setup done) is 0, i.e. a switcher configuration already exists (loaded from
+disk?) but the first-setup path still runs. From prewarmWithCompletion (PRSServer XPC).
+Not seen on sweet notes. Next: find where the configuration is loaded and why the
+flag is not set (RE of PosterBoard.framework in research/ipsw-x/dyld).
+**Sluggishness** candidates: (1) 300 s IOKit-quiet stalls (fixed by xnu 0086, not
+built yet); (2) CPU clocks never raised after ABL (topaz needed a cpufreq patch) ->
+probe 9 measures PMU cycles vs timer on CPU0 (A520) and CPU4 (A720); (3)
+bluetoothd/fairplayd relaunch loops.
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

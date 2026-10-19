@@ -25,6 +25,21 @@ vol-: back to fastboot, Android not booted). Observed before that: GCC vote
 0x23000/0x23004 read 0, core 1x/2x 0x00004000 (on); SE0 RCG cmd 0x80000000 cfg
 0x00100000, **CMD_DFSR 0x21 (DFS on)**, PERF_DFSR l0 0x1 (TCXO 19.2 MHz), l1-l4
 0x2601 (GPLL0 even), l5 0x10b, l6 0x109 (GPLL0 main), l7 0.
+Probe 4 fixed (16:34): GPIO0/1 cfg 0x203 io 3 (GPIO out high), GPIO2/3/19/20
+cfg 0x1 io 0 (in, pull-down: touch held in reset); RSC DRV2 id 0x00030200 =
+**v3.2** (v3 TCS offsets), solver 0x04010100, prnt 0x800C8104 (8 TCS, 16 cmds);
+cmd-db ok: ldob22 = 0x42800, ldob11 = 0x40A00. GENI not read (clocks off).
+**Probe 5 (16:38, commit 9148c4f):** pins muxed (g0 0x84), RPMh v3 AMC votes
+ldob11 1800 mV + ldob22 3300 mV **completed** (cmd status 0x10101), GCC QUP0
+votes (0x487C0900), SE0 clock on, reset released (g20io 3, g19io 1). SE0 fw
+0x102 **proto 1 = SPI**, HW_PARAM_0 0x202029E4 (FIFO depth 32), **but
+GENI_IF_DISABLE_RO = 1: FIFO interface disabled -> SE0 only works through GPI
+DMA** (spi-geni-qcom.c falls back to GPI when fifo_disable). Chip-ID reads in
+FIFO mode: all zero, M_IRQ 0x2, no CMD_DONE. Next: minimal GPI DMA path.
+GPI node (live DT): qcom,gpi-dma@a00000 size 0x60000, gpi-ee-offset 0x10000,
+max-num-gpii 12, gpii-mask 0x3e (HLOS 1-5), static-gpii-mask 0x1, iommus SID
+0x576, iommu-dma-addr-pool 0x100000+0x100000, dma-coherent; SE0 dmas =
+<gpi 0 0 1 64 2>, <gpi 1 0 1 64 2>.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

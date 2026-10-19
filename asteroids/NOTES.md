@@ -288,6 +288,17 @@ starts here, so its first update comes late. **assetsd** (Photos) aborts on ever
 (5/5): uncaught ObjC exception in a dispatch block (objc_terminate -> abort), reason not
 logged. fix2 (15:51 UTC) = fix1 + `sweetscan=assetsd,PosterBoard sweetbusy=0` to print
 heap strings (exception reason) at the crash.
+**fix2 (`logs/asteroids-fix2.txt`), heap strings at the PosterBoard crashes:** "Switcher
+configuration yielded no home or lock screen poster paths" (no posters at all), the
+first-setup BSAssert, then a 2nd instance: NSInvalidArgumentException "-[__NSPlaceholderDictionary
+initWithObjects:forKeys:count:]: attempt to insert nil object from objects[1]". assetsd did not
+run this boot. **Root cause direction: PosterBoard finds no poster providers.** They are in
+the image (extension point com.apple.posterkit.provider): WallpaperKit CollectionsPoster.appex,
+PhotosUIPrivate PhotosPosterProvider.appex, EmojiPoster/GradientPoster/UnityPoster/PridePoster
+*Extension.appex, ExtragalacticPoster, WeatherPoster, PaperBoard LegacyPoster. So app-extension
+discovery (ExtensionKit / pkd, LaunchServices plugin records) returns nothing - probably also why
+there are no widgets. Next: get os_log of pkd/PosterBoard (OS_ACTIVITY_DT_MODE=YES on their
+launchd jobs; stdout reaches the kernel log via the 0048 /dev/null tee) - needs an image a2.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

@@ -21,8 +21,28 @@ Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 - **Probe 3 ran (commit 0fd195d, `build.sh 3`)**: UFS works after START STOP UNIT
   (ACTIVE) to W-LUN 0xD0; LUN 0 = Linux sdb. Byte write to GICR_IPRIORITYR is
   stored, but then 0/10 SGI1 arrive.
-- Next: probe 3b (same `build.sh 3`): GPT of LUN 0, and word-written priority
-  0x80 vs 0xa0 to tell "byte access" from "value 0x80".
+- **Probe 3b ran (commit 4e88844)**: LUN 0 GPT read, matches the backup GPT exactly
+  (super 0x2208 9216 MiB, metadata 0x242248 64 MiB, rawdump 0x246248 256 MiB,
+  userdata 0x256248 230237 MiB; userdata fs unreadable = metadata encryption).
+  SGI bursts got 0/10 for byte 0x80, word 0x80 AND word 0xa0: **the probe 3 SGI
+  test is invalid** - it never set GICD_CTLR group enables (0xD0, as ABL leaves
+  it; probe 2 wrote 0xD3 first). So nothing is known about byte writes; moot,
+  because xnu patch 0004 writes GICR_IPRIORITYR as 32-bit 0xA0A0A0A0.
+  Probe 1's 1/10 remains unexplained (it did enable GICD); probe 2 shows the
+  setup XNU uses works.
+- **Probe phase complete.** Next: the XNU port proper (see "Port plan" below).
+
+## Port plan (proposed, not started)
+
+1. Shim for asteroids: boot.img v4, framebuffer from SSPP, move the kernel out
+   of ABL's 0xA8000000 into a clean RAM range (largest: 0x8bf800000..0x9f4580000
+   minus reserved, ~4.8 GB contiguous; check /proc/iomem holes), generated ADT.
+2. XNU: the SWEET machine config hardcodes sweet values (GICD/GICR bases, GICR
+   stride 0x20000 -> 0x40000, timer INTID 19 -> 27, UFS/fb addresses, memory
+   layout). Make them ADT-driven or add an ASTEROIDS config.
+3. XNU UFS driver: add SSU ACTIVE to W-LUN 0xD0 before first I/O; root LUN 0.
+4. Then the sweet bring-up order: fbcon, CPUs, UFS root, launchd, display, touch
+   (FocalTech SPI, new), buttons (PMK8550 PON), USB (DWC3 + new PHY).
 
 ## Probe 3 results (observed, photo 2026-10-19 14:35)
 

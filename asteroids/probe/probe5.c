@@ -639,7 +639,7 @@ void shim_main(uint64_t dtb)
 	stage = "gpi steps";
 	if (gpi_stage_test()) {
 		gpi_dump();
-		con_str("GPI", "NOP TRE gave no event: stop");
+		con_str("GPI", "TX-only frame gave no event: stop");
 		goto out;
 	}
 #endif

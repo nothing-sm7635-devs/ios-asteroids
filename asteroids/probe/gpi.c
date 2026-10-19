@@ -317,40 +317,77 @@ static void countdown(const char *what, unsigned secs)
 }
 
 /*
- * Runs 2-6 reset at the first doorbell. Split it, with a pause before each:
- * DB0 rings TX with no new TRE (register write only), NOP queues one NOP TRE
- * with IEOT (one TRE fetch + one event write by the GPI, nothing for SE0)
- * and watches only the event ring in memory for 1 s before reading any
- * GPI register again.
+ * One step: countdown, queue n TREs on channel ch, ring it, then watch only
+ * the event ring in memory for 1 s. Prints the event (or zeros) and the
+ * channel RP; returns 1 if an event arrived (and consumes it).
  */
-int gpi_stage_test(void)
+static int step(const char *label, unsigned ch, const uint32_t (*t)[4], unsigned n)
 {
-	countdown("DB0 in", 3);
-	wr32(CH_DB(0), pa(&tx_ring[tx_wp]));
-	delay_ms(500);
-	con_hex2("DB0 ok", "evrp=", rd32(EV_CNTXT + C_RP_LO), "chrp=", rd32(CH_CNTXT(0) + C_RP_LO));
-
-	countdown("NOP in", 3);
-	put_tre(tx_ring, &tx_wp, 0, 0, 0, 1U << 16 | 1U << 9);	/* NOOP_TRE, ieot */
+	struct tre *ring = ch ? rx_ring : tx_ring;
+	unsigned *wp = ch ? &rx_wp : &tx_wp;
+	countdown(label, 3);
+	for (unsigned i = 0; i < n; i++)
+		put_tre(ring, wp, t[i][0], t[i][1], t[i][2], t[i][3]);
 	__asm__ volatile("dsb sy" ::: "memory");
-	wr32(CH_DB(0), pa(&tx_ring[tx_wp]));
+	wr32(CH_DB(ch), pa(&ring[*wp]));
 	volatile struct tre *e = &ev_ring[ev_rp];
 	uint64_t t0 = now(), end = t0 + rsr("cntfrq_el0");
 	while (!e->d[3] && now() < end)
 		;
 	uint32_t d2 = e->d[2], d3 = e->d[3], us = to_us(now() - t0);
-	con_hex2("NOP ev", "d2=", d2, "d3=", d3);
-	con_hex2(" ", "us=", us, "d0=", e->d[0]);
-	con_hex2(" rp", "ev=", rd32(EV_CNTXT + C_RP_LO), "ch0=", rd32(CH_CNTXT(0) + C_RP_LO));
-	con_hex2(" ", "ch0st=", rd32(CH_CNTXT(0)), "glob=", rd32(GLOB_STTS));
+	con_hex2(" ev", "d2=", d2, "d3=", d3);
+	con_hex2(" ", "us=", us, "chrp=", rd32(CH_CNTXT(ch) + C_RP_LO) & 0xfff);
 	if (!d3)
-		return -1;
+		return 0;
+	for (int i = 0; i < 4; i++)
+		last_ev[i] = e->d[i];
 	n_ev++;
 	ev_rp = (ev_rp + 1) % RING_N;
 	ev_wp = (ev_wp + 1) % RING_N;
 	wr32(EV_DB, pa(&ev_ring[ev_wp]));
 	wr32(IEOB_CLR, 1);
-	countdown("SPI in", 3);
+	return 1;
+}
+
+/*
+ * Runs 2-6 reset at the first full SPI doorbell; run 7 showed a bare
+ * doorbell and a NOP TRE (fetched: ch0 RP +0x10) are harmless, but the NOP
+ * with IEOT wrote no event. Now: NOP with IEOB, LOCK/UNLOCK (IEOB; these
+ * must complete with an event) = GPI event writes alone, then a TX-only SPI
+ * frame (SE0 runs, GPI reads tx_buf, writes one event, no RX data write).
+ * Returns 0 when the TX-only frame completed with an event.
+ */
+int gpi_stage_test(void)
+{
+	static const uint32_t nop[1][4] = { { 0, 0, 0, 1U << 16 | 1U << 8 } };
+	static const uint32_t lock[1][4] = { { 0, 0, 0, 3U << 20 | 0U << 16 | 1U << 8 } };
+	static const uint32_t unlock[1][4] = { { 0, 0, 0, 3U << 20 | 1U << 16 | 1U << 8 } };
+	con_clear(NAVY);
+	con_str("PROBE", "probe 8 GPI steps (run 8)");
+	status_row = con_row();
+	con_skip();
+	con_skip();
+	con_skip();
+	con_skip();
+	step("NOP ieob", 0, nop, 1);
+	step("LOCK", 0, lock, 1);
+	step("UNLOCK", 0, unlock, 1);
+
+	/* TX-only: config0, GO SPI_TX_ONLY (chain, no RX link), TX DMA (IEOT) */
+	static const uint8_t hdr[10] = { 0xa3, 0xa0, 0, 1 };
+	for (unsigned i = 0; i < sizeof(hdr); i++)
+		tx_buf[i] = hdr[i];
+	uint32_t tx[3][4] = {
+		{ PACK_TX_RX << 24 | WORD_LEN, 0, CLK_DIV, 2U << 20 | 2U << 16 | 1 },
+		{ 1, 0, 0, 2U << 20 | 0U << 16 | 1 },
+		{ pa(tx_buf), 0, sizeof(hdr), 1U << 20 | 1U << 9 },
+	};
+	configured = 1;
+	int ok = step("SPI tx", 0, (const uint32_t (*)[4])tx, 3);
+	con_hex2(" ", "ch0st=", rd32(CH_CNTXT(0)), "glob=", rd32(GLOB_STTS));
+	if (!ok)
+		return -1;
+	countdown("FULL in", 3);
 	return 0;
 }
 

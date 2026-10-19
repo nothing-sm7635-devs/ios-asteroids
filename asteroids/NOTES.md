@@ -123,6 +123,14 @@ before each step: "DB0" = TX doorbell with no new TRE; "NOP" = one NOOP TRE with
 IEOT, then only the event ring in memory is polled (1 s) before any GPI read;
 then "SPI" = the chip-ID transfer. The last label on screen before the reset
 tells which step kills it. Ask the user for a video.
+**Probe 8 run 7 (17:31, photo): NO RESET.** DB0 (doorbell, no TRE) fine. NOP TRE
+(IEOT): **ch0 RP 0xA8005C00 -> 0xA8005C10 = GPI fetched the TRE from DDR through
+the routed SMMU stream** (route + SN3 vote), but no event in memory within 1 s
+(d3 0, ev RP unchanged), ch0 still STARTED, type/glob/gpii/errlog all 0. Open:
+GPI DMA *writes* (events, RX data) vs SE0 activity as the reset trigger.
+Run 8 build (17:32): screen cleared, steps NOP(IEOB), LOCK, UNLOCK (IEOB: should
+each write an event), then TX-only SPI (config0 + GO TX_ONLY + TX DMA IEOT, no RX),
+each after a 3 s countdown with memory-only polling; then the full-duplex reads.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

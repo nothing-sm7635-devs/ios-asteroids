@@ -174,6 +174,44 @@ void gpi_smmu_check(void)
 	}
 }
 
+/*
+ * Run 3: sCR0 0x002B0406 (USFCFG: unmatched streams fault), no SMR for 0x576,
+ * UFS 0x60 = SMR 0 -> S2CR 0 (translate, context bank 0), which passed PA DMA
+ * in probe 2. Give the GPI stream the same S2CR in the highest free SMR
+ * (arm_smmu_write_sme order: S2CR, then SMR). Runtime only; a reset clears it.
+ * Returns -1 if the entry does not read back (e.g. the write is dropped).
+ */
+int gpi_smmu_route(void)
+{
+	uint32_t scr0 = rd32(SMMU + SMMU_sCR0);
+	unsigned nsmr = rd32(SMMU + SMMU_ID0) & 0xff, exid = (scr0 >> 3) & 1;
+	int ufs = -1, slot = -1;
+	if (exid)
+		return -1;	/* layout not handled; run 3 had EXIDENABLE 0 */
+	for (unsigned n = 0; n < nsmr; n++) {
+		uint32_t r = rd32(SMMU + SMMU_SMR(n));
+		if (r >> 31) {
+			if (((0x60 ^ r) & ~(r >> 16) & 0x7fff) == 0 && ufs < 0)
+				ufs = (int)n;
+		} else {
+			slot = (int)n;
+		}
+	}
+	if (ufs < 0 || slot < 0) {
+		con_hex2("ROUTE", "ufs=", (uint32_t)ufs, "slot=", (uint32_t)slot);
+		return -1;
+	}
+	uint32_t s2cr = rd32(SMMU + SMMU_S2CR(ufs)), smr = 1U << 31 | 0x576;
+	wr32(SMMU + SMMU_S2CR(slot), s2cr);
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr32(SMMU + SMMU_SMR(slot), smr);
+	__asm__ volatile("dsb sy" ::: "memory");
+	uint32_t rs = rd32(SMMU + SMMU_SMR(slot)), rc = rd32(SMMU + SMMU_S2CR(slot));
+	con_hex2("ROUTE", "slot=", (uint32_t)slot, "s2cr=", rc);
+	con_hex2(" ", "smr=", rs, "gfsr=", rd32(SMMU + SMMU_sGFSR));
+	return rs == smr && rc == s2cr ? 0 : -1;
+}
+
 void gpi_dump(void)
 {
 	con_hex2("GPII0", "ch0=", rd32(CH_CNTXT(0)), "ch1=", rd32(CH_CNTXT(1)));

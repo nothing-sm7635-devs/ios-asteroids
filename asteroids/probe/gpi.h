@@ -9,6 +9,8 @@ int gpi_spi_xfer(const uint8_t *tx, uint8_t *rx, unsigned n);
 uint32_t gpi_status(void);
 /* Print sCR0 and the SMR/S2CR matching GPI, UFS and MDP stream IDs. */
 void gpi_smmu_check(void);
+/* Route SID 0x576 to UFS's S2CR in a free SMR; 0 if it reads back. */
+int gpi_smmu_route(void);
 /* Print GPII / channel state (after a failure). */
 void gpi_dump(void);
 

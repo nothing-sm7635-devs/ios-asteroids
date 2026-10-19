@@ -86,6 +86,16 @@ fetch, SID 0x576) faults at the apps SMMU or on the QUP0->DDR NoC path and
 that is fatal. Run 3 build (17:16): read-only apps SMMU dump after "GPI up"
 (sCR0, ID0, sGFSR, SMR/S2CR matching SIDs 0x576 GPI / 0x60 UFS / 0x1c00 MDP),
 then a 15 s countdown before the doorbell.
+**Probe 8 run 3 (17:17, photo), apps SMMU (observed):** sCR0 0x002B0406
+(USFCFG=1: unmatched streams FAULT; GFRE/GFIE set; CLIENTPD 0; EXIDENABLE 0),
+ID0 0x4C017E72 (114 SMRs), sGFSR 0. **SID 0x576 (GPI): no SMR.** SID 0x60 (UFS):
+SMR 0 = 0x80000060, S2CR 0 = 0x00000000 (translate via context bank 0 - which
+passed our PA DMA in probe 2, so CB0 maps it 1:1 or S1-bypasses). SID 0x1c00
+(MDP): SMR 2 = 0x80021C00, S2CR 0x2 (CB 2). Reset again at the doorbell.
+Conclusion: GPI DMA faults as an unmatched stream; the fault resets the SoC.
+Run 4 build (17:19): `gpi_smmu_route()` copies UFS's S2CR into the highest free
+SMR slot and sets SMR = valid | 0x576 (runtime only), stops if not read back,
+5 s countdown, doorbell. XNU will need the same SMR (or its own CB) for touch.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

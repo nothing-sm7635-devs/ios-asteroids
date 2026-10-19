@@ -175,6 +175,11 @@ GPI ring/event traffic with 0x576. Commit with these results: see git log.
 Open: interrupts (GPI GIC SPI 0x1b1, touch GPIO 19 falling edge) instead of
 polling; test without the sCR0 change.
 
+**2026-10-19: user reports TOUCH WORKS in iOS with the 0084 kernel** (booted with
+the boot-args from the 0084 test plan; build/run ID, exact args and log not recorded
+in this session - add them when known). Still open: drop sCR0 change
+(`sweettouchgf=1` test), interrupts instead of polling.
+
 **xnu 0084 (2026-10-19 ~17:55, written, NOT built, NOT booted):**
 `xnu/patches/0084-sweet-asteroids-touch.patch` applies on 0001-0083 (checked in a
 clean `tools/xnu-tree.sh` worktree, files MATCH). New `bsd/dev/sweet_touch_asteroids.c`

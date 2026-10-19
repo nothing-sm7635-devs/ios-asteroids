@@ -5,6 +5,18 @@ codename Asteroids (IND SKU), SM7635 "volcano" (Snapdragon 7s Gen 3).
 Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 `/home/saalim/os/los24/kernel/nothing/{sm7635,sm7635-devicetrees,sm7635-modules}`.
 
+## >>> 2026-10-19 ~10:52 UTC: iOS 16.7 LOCK SCREEN ON THE NOTHING PHONE (3a) <<<
+
+Boot root3 (`asteroids/out/root3-boot.img`, started 10:37:52 UTC; kernel = CI
+kernel.development.sweet with 0082, ADT --board asteroids with d22ap /product,
+userdata = image a1 after two interrupted boots, cpus=8, sweetfb_noconsole=1,
+sweetsample=SpringBoard,lsd,backboardd) left undisturbed: the user reported the
+lock screen roughly 6-15 min after start (exact time unknown; reported at ~10:52).
+So the root2 hang was the first-boot LaunchServices reseed (as on ios-topaz),
+just slow; it completed this time. No touch / buttons yet (sweet drivers gated
+off): next = FocalTech touch on QUP SE0 SPI (GPIO 19 irq, 20 reset, L22B/L11B),
+PMK8550 PON keys.
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

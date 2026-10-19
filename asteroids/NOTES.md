@@ -31,6 +31,25 @@ Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
   Probe 1's 1/10 remains unexplained (it did enable GICD); probe 2 shows the
   setup XNU uses works.
 - **Probe phase complete.** Next: the XNU port proper (see "Port plan" below).
+- **Port step 1 (commit 1d8ac31), written, NOT built or booted yet:**
+  - `asteroids/shim/`: fb from SSPP, `ufs_wake()` (SSU ACTIVE), SWEETXNU loader
+    that searches the v4 initrd (vendor ramdisk comes first, so the payload is
+    unaligned) and copies with aligned loads (host-tested).
+  - `tools/mkadt.py --board asteroids` (sweet output byte-identical, checked).
+  - `xnu/patches/0082-sweet-board-neutral-asteroids.patch` (applies on 0081 and
+    with blacktop's patches; verified locally in a tree built from
+    xnu-8796.141.3 + stage scripts + 0001-0081): early fb from boot_args,
+    GICR stride from ADT, platform expert/CPU match asteroids, SM7150 drivers
+    gated on root compatible xiaomi,sweet.
+  - `asteroids/build-boot.sh KERNEL NAME [ARGS]` -> out/NAME-boot.img; default
+    args `debug=0xc serial=3 cpus=1 keepsyms=1`, no rd= (no storage access).
+  - Loader test: `asteroids/out/test-boot.img` (shim + testpayload.S: green
+    screen = boot_args/physBase/fb correct, red = wrong).
+- **CI not available on this host:** no `gh` CLI here. The kernel must be built by
+  the xnu workflow (push of xnu/patches to main triggers it). Note: CI silently
+  SKIPS patches that fail `git apply --check` - verify a patch applies first.
+- Not on this host: research/ (d22ap.adt for /product), IPSW, iOS root images,
+  sweet kernel builds.
 
 ## Port plan (proposed, not started)
 

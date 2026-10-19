@@ -1,5 +1,8 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+> **Second device (2026-10-19):** port to the Nothing Phone (3a) ("asteroids", SM7635, Gunyah)
+> has its own notes in `asteroids/NOTES.md`. The sweet state below is unchanged.
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<

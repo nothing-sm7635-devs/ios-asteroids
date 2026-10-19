@@ -16,8 +16,30 @@ Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 - **Probe 1 ran (commit 3d399a2, `asteroids/probe/build.sh`, image
   `asteroids/probe/out/probe-boot.img`)**: all tests completed, results below
   (read off the screen by the user).
-- Next: probe 2 = understand the SGI result (only 1 of 10 self-SGIs arrived),
-  SGI to another CPU, then UFS (ufshc@1d84000) read with the shim UFS driver.
+- **Probe 2 ran (commit e54c295, `build.sh 2`)**: SGIs all fine (see below);
+  UFS transport works but every SCSI command gets CHECK CONDITION.
+- Next: probe 3 = decode the UFS sense data; if NOT READY, START STOP UNIT
+  (power condition ACTIVE) to the UFS Device W-LUN 0xD0 as Linux does, then
+  TUR / READ CAPACITY / LUN 1 GPT again. Also check GICR IPRIORITYR byte writes.
+
+## Probe 2 results (observed, photo 2026-10-19 14:31)
+
+| Item | Value |
+| --- | --- |
+| SGI A (10 self-SGIs sent masked) | `3333333333`: each pending in GICR_ISPENDR0, HPPI = 1, taken once on unmask; total 10, RPR 0xFF after |
+| SGI B (probe 1's unmasked case) | `123456789A` = 10/10 |
+| SGI C (IDs 0-15 once) | got 0xFFFF |
+| SGI D cross-CPU | CPU1 on ret 0, CPU0->CPU1 10/10 (last1 = 2); CPU1->CPU0 0xB = 10 + 1 left from test C (SGI 3) |
+| GICR priorities | written as 32-bit words 0xa0a0a0a0, read back A0A0A0A0 |
+| GICR_ISPENDR0 | bit 27 (vtimer) pending even though we never enabled the vtimer in probe 2 (left by ABL/Gunyah) |
+| UFS regs | VER 0x300, CAP 0x1587031F (32 slots), HCE 1, HCS 0x10F (DP, UTRLRDY, UTMRLRDY, UCRDY; UPMCRS 1), IS 0x400 (UPMS), UTRLBA was 0xD2F2D000 (ABL's), DBR 0 |
+| UFS takeover | our list at 0xA8006000 accepted (RSR 1) |
+| UFS commands | TUR LUN0 x3: rc 4 (OCS 0 = transport ok, SCSI status 0x02 CHECK CONDITION); READ CAPACITY LUN0-5 all fail; READ LUN1 LBA0 rc 4 |
+
+Interpretation (guess): DMA through the SMMU works (UTRD/UCD read, response UPIU
+written). Probe 1's 1/10 SGI result differed from probe 2 in using byte writes to
+GICR_IPRIORITYR (and leaving vtimer enabled): Gunyah's vGIC may ignore byte
+writes. Not verified yet.
 
 ## Probe 1 results (observed)
 

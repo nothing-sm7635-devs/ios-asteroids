@@ -11,11 +11,13 @@
  * Register layout and descriptor formats: JEDEC UFSHCI (JESD223).
  */
 #include <stdint.h>
+#include "common.h"
 #include "fbcon.h"
 #include "ufs.h"
 
 #define UFS_BASE	0x01d84000UL	/* ufshc@1d84000, volcano DT */
 #define DATA_LUN	1		/* sdb: super, metadata, userdata */
+#define UFS_DEVICE_WLUN	0xd0		/* well-known LUN "UFS Device" (power modes) */
 
 #define REG_CAP		0x00
 #define REG_VER		0x08
@@ -61,6 +63,9 @@ struct ucd {
 static struct utrd utrl[32] __attribute__((aligned(1024)));
 static struct ucd ucd __attribute__((aligned(128)));
 static uint8_t data[2 * BLOCK] __attribute__((aligned(4096)));
+
+/* sense key << 16 | ASC << 8 | ASCQ of the last CHECK CONDITION, else 0 */
+static uint32_t last_sense;
 
 static uint64_t ticks(void)
 {
@@ -130,6 +135,10 @@ static uint32_t scsi(uint8_t lun, const uint8_t *cdb, unsigned cdb_len, void *bu
 	__asm__ volatile("dsb sy" ::: "memory");
 	*ocs_out = utrl[0].dw2 & 0xff;
 	*status_out = ucd.resp[7];		/* SCSI status in the response UPIU */
+	/* Response UPIU data segment: sense length (BE16) at 32, fixed-format sense at 34 */
+	last_sense = 0;
+	if (ucd.resp[7] == 0x02 && (ucd.resp[32] << 8 | ucd.resp[33]) >= 14)
+		last_sense = (ucd.resp[34 + 2] & 0xfu) << 16 | ucd.resp[34 + 12] << 8 | ucd.resp[34 + 13];
 	if (*ocs_out)
 		return 2;
 	if (ucd.resp[0] != 0x21)		/* RESPONSE UPIU */
@@ -211,7 +220,21 @@ static void list_partitions(uint8_t lun, uint32_t entry_lba, uint32_t nent)
 	}
 }
 
-void test_ufs(void)
+/* TEST UNIT READY on a LUN, a few tries; one line: rc and sense */
+static uint32_t tur(const char *label, uint8_t lun)
+{
+	static const uint8_t cdb[6] = { 0x00 };
+	uint32_t ocs = 0, st = 0, rc = 0;
+	for (int i = 0; i < 3; i++) {
+		rc = scsi(lun, cdb, sizeof(cdb), 0, 0, &ocs, &st);
+		if (!rc)
+			break;
+	}
+	con_hex2(label, "rc=", rc << 16 | ocs << 8 | st, "sense=", last_sense);
+	return rc;
+}
+
+void test_ufs(int wake)
 {
 	uint32_t cap = ufs_rd(REG_CAP), hcs = ufs_rd(REG_HCS), hce = ufs_rd(REG_HCE);
 	con_hex2("UFS", "ver=", ufs_rd(REG_VER), "cap=", cap);
@@ -247,13 +270,21 @@ void test_ufs(void)
 	}
 
 	uint32_t ocs = 0, st = 0, rc;
-	static const uint8_t tur[6] = { 0x00 };
-	/* A first command may report a unit attention; retry a few times. */
-	for (int i = 0; i < 3; i++) {
-		rc = scsi(0, tur, sizeof(tur), 0, 0, &ocs, &st);
-		con_hex2("UFS TUR", "rc=", rc, "ocs/st=", ocs << 8 | st);
-		if (!rc)
-			break;
+	/* rc = stage << 16 | OCS << 8 | SCSI status; sense = key << 16 | ASC << 8 | ASCQ */
+	rc = tur("TUR lun0", 0);
+	tur("TUR lun1", DATA_LUN);
+	tur("TUR dev", UFS_DEVICE_WLUN);
+	if (wake && rc) {
+		/*
+		 * START STOP UNIT, power condition ACTIVE, to the UFS Device W-LUN:
+		 * what Linux ufshcd_set_dev_pwr_mode() sends. Power state only.
+		 */
+		static const uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
+		rc = scsi(UFS_DEVICE_WLUN, ssu, sizeof(ssu), 0, 0, &ocs, &st);
+		con_hex2("SSU act", "rc=", rc << 16 | ocs << 8 | st, "sense=", last_sense);
+		delay_ms(10);
+		tur("TUR lun0", 0);
+		tur("TUR lun1", DATA_LUN);
 	}
 
 	/* Linux: sda 20 MiB, sdb 234 GiB, sdc 20 MiB, sdd 32 MiB, sde 4 GiB, sdf 32 MiB */
@@ -263,7 +294,7 @@ void test_ufs(void)
 
 	/* READ(10) LBA 0, 2 blocks: protective MBR and the GPT header. */
 	rc = read_blocks(DATA_LUN, 0, 2, data);
-	con_hex2("UFS READ", "lun=", DATA_LUN, "rc=", rc);
+	con_hex2("UFS READ", "lun=", DATA_LUN, "rc=", rc << 16 | last_sense);
 	if (rc)
 		return;
 	con_hex2("UFS MBR", "sig=", data[510] | data[511] << 8, "type=", data[450]);

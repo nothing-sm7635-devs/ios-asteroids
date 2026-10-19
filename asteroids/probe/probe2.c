@@ -152,7 +152,7 @@ static void put_digit(char *s, int i, uint32_t v)
 	s[i] = v < 10 ? '0' + v : (v < 36 ? 'A' + v - 10 : '+');
 }
 
-static void test_sgi(void)
+static void __attribute__((unused)) test_sgi(void)
 {
 	char s[16];
 	uintptr_t r;
@@ -250,25 +250,66 @@ static void test_sgi(void)
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
 }
 
+/*
+ * Probe 3: does Gunyah's vGIC take byte writes to GICR_IPRIORITYR? (probe 1
+ * wrote bytes and got 1/10 SGIs, probe 2 wrote words and got 10/10)
+ */
+static void __attribute__((unused)) test_prio_bytes(void)
+{
+	stage = "prio bytes";
+	uintptr_t r = gic_cpu_init();	/* SGI0-3 = 0xa0a0a0a0 */
+	if (!r) {
+		con_str("GICR", "not found");
+		return;
+	}
+	uint32_t before = rd32(r + GICR_IPRIORITYR);
+	wr8(r + GICR_IPRIORITYR + 1, 0x80);	/* SGI1 */
+	uint32_t after = rd32(r + GICR_IPRIORITYR);
+	con_hex2("PRIO b", "before=", before, "after=", after);	/* works: A0A080A0 */
+
+	/* and with SGI1 at the byte-written priority, is it delivered? */
+	uint32_t c0 = sgi_count[0][1];
+	irq_on();
+	for (int i = 0; i < 10; i++) {
+		send_sgi(0, 1);
+		delay_ms(5);
+	}
+	irq_off();
+	con_hex2(" sgi1", "got=", sgi_count[0][1] - c0, "rpr=", rsr("icc_rpr_el1"));
+	wr32(r + GICR_ICENABLER0, 0xffffffff);
+}
+
 void shim_main(uint64_t dtb)
 {
 	(void)dtb;
 	stage = "fb";
 	fb_detect();
 	con_clear(NAVY);
+#ifdef PROBE3
+	con_str("PROBE", "asteroids probe 3");
+#else
 	con_str("PROBE", "asteroids probe 2");
+#endif
 	status_row = con_row();
 	con_skip();	/* UPTIME, WDT and pet lines are filled in by hold() */
 	con_skip();
 	con_skip();
 	con_skip();
 
+#ifdef PROBE3
+	test_prio_bytes();
+#else
 	test_sgi();
+#endif
 	smc(GH_WDT_PET, 0, 0, 0);
 	con_skip();
 
 	stage = "ufs";
-	test_ufs();
+#ifdef PROBE3
+	test_ufs(1);
+#else
+	test_ufs(0);
+#endif
 
 	stage = "done";
 	con_skip();

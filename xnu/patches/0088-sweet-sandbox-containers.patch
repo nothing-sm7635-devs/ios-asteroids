@@ -106,7 +106,7 @@
 +		return error;
 +	}
 +	proc_t target = req.pid == 0 ? proc_self() : proc_find((int)req.pid);
-+	if (target == PROC_NULL) {
++	if (target == NULL) {
 +		return ESRCH;
 +	}
 +	uint64_t id = proc_uniqueid(target);

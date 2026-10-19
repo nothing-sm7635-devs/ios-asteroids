@@ -19,6 +19,7 @@ case $n in
 1) srcs="probe.c mmu.c" ;;
 2) srcs="probe2.c ufs.c" ;;
 3) srcs="probe2.c ufs.c"; CFLAGS="$CFLAGS -DPROBE3" ;;
+4) srcs="probe4.c" ;;
 *) echo "no probe $n" >&2; exit 1 ;;
 esac
 srcs="$srcs common.c fbcon.c"

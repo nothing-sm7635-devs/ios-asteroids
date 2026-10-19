@@ -69,6 +69,24 @@ rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30).
 User report (observed): console scrolled (root mounted from LUN 0 userdata),
 then **the Apple logo appeared** (~10:15 UTC) - iOS userland drawing through
 AppleCLCD on asteroids. Waiting for the lock screen (sweet: ~4-5 min on the logo).
+**root2** (10:20 UTC, sweetfb_noconsole=1): Apple logo for 13+ min. Log pulled in
+Lineage recovery (`fastboot reboot recovery`, adb root, /data NOT mounted,
+userdata = sda13 there) with tools/sweet-log-pull.sh -> `logs/asteroids-root2.txt`
+(154105 B, 77 flushes). Observed: SWEET UFS "userdata" on LUN 0 first block
+0x256248 230237 MiB read-write, DMA 0x8c4f30000; "not sweet, no keys/touch/USB";
+only crash driverkitd (4x, sig 9); bluetoothd/fairplayd.H2 relaunch loop (77x,
+as on sweet); datamigrator ran 2x; lsd exec'd once. **SpringBoard main thread
+identical in all 6 samples**: `-[CCSModuleRepository _initWithDirectoryURLs:...]`
+-> `LSApplicationRecord initWithBundleIdentifier` -> `_LSContextInitCommon` ->
+os_unfair_lock wait; holder t1: `_LSCopyServerStore` ->
+`__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` -> sync XPC to lsd.
+= lsd rebuilds the LaunchServices database (first boot); unknown whether slow
+(each reboot may restart it) or stuck. Symbolication: blacktop ipsw 3.1.739 in
+the session scratchpad, cache `research/ipsw-x/dyld/20H392__iPhone10,3_6/`
+(`ipsw extract --dyld --dyld-arch arm64 IPSW -o research/ipsw-x/dyld`),
+unslid addr = addr - slide (slide from the "SMP proc[pid] slide" line).
+**root3** (10:37:52 UTC) = root2 + `sweetsample=SpringBoard,lsd,backboardd`; let it
+run ~30 min undisturbed, then pull the log: lsd stacks changing = progress.
 
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 

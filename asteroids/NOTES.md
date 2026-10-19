@@ -5,6 +5,28 @@ codename Asteroids (IND SKU), SM7635 "volcano" (Snapdragon 7s Gen 3).
 Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
 `/home/saalim/os/los24/kernel/nothing/{sm7635,sm7635-devicetrees,sm7635-modules}`.
 
+## >>> UPDATE 2026-10-19 15:13: FIRST XNU BOOT ON ASTEROIDS WORKS <<<
+
+CI kernel (run on danascape/ios-android, log: "Applying patch ... 0082", built
+09:38 UTC, kernel.development.sweet sha256 4017e59b...3491390, in xnu/out/,
+git-ignored) + `asteroids/build-boot.sh xnu/out/kernel.development.sweet first`
+(args `debug=0xc serial=3 cpus=1 keepsyms=1`) -> `fastboot boot` ->
+**xnu reaches "Waiting on <dict>IOProviderClass IOMedia, Content Apple_HFS"**
+(waiting for root, as intended; photo 15:13). Seen on screen (observed):
+iBoot version sweet-shim; SWEET AMFI/vnguard/trust-cache lines; device-tree
+platform expert registered; AKS, IOWatchdog, IOCoreSurfaceRoot, HID buttons +
+touch services (no MMIO), battery static fallback; **"SWEET FB: AppleCLCD
+1080x2392 stride 4320 at 0xe3940000, presented as 1125x2436"**; **"SWEET CPU:
+cpu=0 mpidr=0x0 came alive; SGI1 OK"**, "1/1 CPUs initialized, SGI1 verified";
+mbuf pool 196 MB; dlil/ifnet threads scheduled (timer IRQ through the vGIC
+works); VM bootstrap done; no SWEET UFS line (no rd=, storage untouched).
+"debug_log_init: Error!! gPanicBase is still not initialized" also appears
+(as on sweet). The console wrapped once.
+
+Next: `cpus=8` boot (asteroids/out/smp8-boot.img), then decide the root
+filesystem with the user (userdata -> iOS root is destructive; alternative:
+small ramdisk root via mkpayload --ramdisk, rd=md0).
+
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 
 **Where we are.** Probes done; the boot chain up to xnu works on the phone

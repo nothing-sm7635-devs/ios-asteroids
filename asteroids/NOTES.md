@@ -56,6 +56,21 @@ every board (driver refuses unknown boards), touch/USB stay sweet-only. Test: CI
 kernel -> `ASTEROIDS_ALLOW_UFS_WRITES=yes asteroids/build-boot.sh KERNEL keys1
 <root3 args>` -> boot, log should show "SWEET KEYS: nothing,asteroids arb=0x70010000".
 
+**Probe 8 (2026-10-19 17:10, written + built, NOT run yet):** `asteroids/probe/build.sh 8`
+-> `probe/out/probe8-boot.img` = probe 5's bring-up (pins, RPMh rails, GCC, reset)
+with SE0 in GSI mode + a polled GPI DMA driver (`probe/gpi.c`): static GPII 0
+(regs at 0xa00000 - ee-offset 0x10000 + 0x20000...), ch 0 TX / ch 1 RX, SE id 0,
+proto SPI, 16-entry rings in the image (MMU off, PA = VA), config0 (div 20 from
+19.2 MHz, ~1 MHz) + GO full duplex + DMA TREs as spi-msm-geni.c. Then chip ID
+0xA3/0x9F/0xA6 and a loop that reads the 84-byte touch report (reg 0x01) on IRQ-low
+or every 50 ms and draws a dot per finger (yellow id 0). Screen keys: "GPII0"
+pre-state, "GPI up", "ID ..." lines (`mirq=` now = nev<<16|tx code<<8|rx code;
+tx 02 = EOT, rx ff = RX TRE consumed without event), "TOUCH reads/errs",
+" pts p0=" IFXXXYYY (id, flag, x, y hex). Assumptions to check on the photo
+(guesses): apps SMMU passes SID 0x576 untranslated as for UFS; QUP0->DDR path
+works without an interconnect vote. Read-only for storage; vol- + power exits.
+Run: phone in fastboot, `fastboot boot asteroids/probe/out/probe8-boot.img`.
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

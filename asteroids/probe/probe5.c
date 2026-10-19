@@ -31,10 +31,18 @@
  *   6 FTS    read 0xA3 / 0x9F (chip ID: 56 72 FT3683G, 56 62 FT3681) with
  *            the SPI v2 framing + CRC (focaltech_spi_v2.c)
  * Each step prints before the next one runs. No storage access.
+ *
+ * Probe 8 (-DPROBE8) is the same bring-up with SE0 in GSI mode: GENI's
+ * FIFO interface is disabled on SE0, so SPI frames go through GPI DMA
+ * (gpi.c). After the chip ID it polls the touch report (reg 0x01, SPI
+ * protocol v2 layout, focaltech_core.c) and draws each finger on screen.
  */
 #include <stdint.h>
 #include "common.h"
 #include "fbcon.h"
+#ifdef PROBE8
+#include "gpi.h"
+#endif
 
 /* ---- TLMM ---- */
 #define TLMM_BASE	0x0f100000UL
@@ -269,6 +277,27 @@ static int spi_init(void)
 	uint32_t depth = (hw0 >> 16) & 0x3f;
 	con_hex2("SE0", "fw=", fw, "proto=", (fw >> 8) & 0xff);
 	con_hex2(" hw", "p0=", hw0, "ifdis=", rd32(SE + GENI_IF_DISABLE_RO));
+#ifdef PROBE8
+	if (((fw >> 8) & 0xff) != PROTO_SPI)
+		return -1;
+	/* geni_se_init() io part, then geni_se_select_gpi_mode() */
+	wr32(SE + SE_GENI_M_IRQ_CLEAR, 0xffffffff);
+	wr32(SE + SE_GENI_S_IRQ_CLEAR, 0xffffffff);
+	wr32(SE + GENI_CGC_CTRL, rd32(SE + GENI_CGC_CTRL) | 0x7f);
+	wr32(SE + SE_DMA_GENERAL_CFG, rd32(SE + SE_DMA_GENERAL_CFG) | 0xf);
+	wr32(SE + GENI_OUTPUT_CTRL, 0x7f);
+	wr32(SE + GENI_FORCE_DEFAULT_REG, 1);
+	wr32(SE + SE_SPI_LOOPBACK, 0);
+	wr32(SE + SE_SPI_DEMUX_SEL, 0);
+	wr32(SE + SE_SPI_DEMUX_OUTPUT_INV, 0);
+	wr32(SE + SE_IRQ_EN, 0);
+	wr32(SE + SE_GENI_M_IRQ_EN, rd32(SE + SE_GENI_M_IRQ_EN) &
+	     ~(M_CMD_DONE | (1U << 26) | (1U << 27) | (1U << 30)));
+	wr32(SE + SE_GENI_DMA_MODE_EN, 1);
+	wr32(SE + SE_GSI_EVENT_EN, rd32(SE + SE_GSI_EVENT_EN) | 0xf);
+	con_hex2(" gsi", "dma=", rd32(SE + SE_GENI_DMA_MODE_EN), "ev=", rd32(SE + SE_GSI_EVENT_EN));
+	return 0;
+#endif
 	if (((fw >> 8) & 0xff) != PROTO_SPI || depth < 4)
 		return -1;
 	/* geni_se_init(): irq clear, io init, io set mode, watermarks */
@@ -321,6 +350,12 @@ static int wait_done(void)
 /* Full-duplex transfer of n bytes (n <= 32), CS held for the whole frame. */
 static int spi_xfer(const uint8_t *tx, uint8_t *rx, unsigned n)
 {
+#ifdef PROBE8
+	int g = gpi_spi_xfer(tx, rx, n);
+	last_mirq = gpi_status();
+	delay_ms(1);	/* CS_HIGH_DELAY 150 us */
+	return g;
+#endif
 	m_cmd(SPI_CS_ASSERT, 0);
 	if (wait_done())
 		return -1;
@@ -376,6 +411,118 @@ static int fts_read_reg(const char *label, uint8_t reg, uint8_t *val)
 	return ok ? 0 : -1;
 }
 
+#ifdef PROBE8
+#define TOUCH_LEN	84	/* FTS_TOUCH_DATA_LEN_V2: 10 points x 8 + 4 */
+#define FTS_UP		1	/* event flag: 0 down, 1 up, 2 contact */
+#define DOT		24
+
+/* fts_read() of len bytes at reg, CRC checked; -2 status, -3 CRC */
+static int fts_read_buf(uint8_t reg, uint8_t *buf, unsigned len)
+{
+	static uint8_t tx[GPI_BUF], rx[GPI_BUF];
+	unsigned n = 7 + len + 2;
+	for (unsigned i = 0; i < n; i++)
+		tx[i] = 0;
+	tx[0] = reg;
+	tx[1] = 0xa0;
+	tx[2] = (uint8_t)(len >> 8);
+	tx[3] = (uint8_t)len;
+	if (spi_xfer(tx, rx, n))
+		return -1;
+	if (rx[3] & 0xa0)
+		return -2;
+	if ((uint16_t)(rx[n - 1] << 8 | rx[n - 2]) != crc_kermit(rx + 7, len))
+		return -3;
+	for (unsigned i = 0; i < len; i++)
+		buf[i] = rx[7 + i];
+	return 0;
+}
+
+static void dot(uint32_t x, uint32_t y, uint32_t c)
+{
+	for (uint32_t dy = 0; dy < DOT; dy++)
+		for (uint32_t dx = 0; dx < DOT; dx++) {
+			uint32_t px = x + dx - DOT / 2, py = y + dy - DOT / 2;
+			if (px < fb.w && py < fb.h && fb.bpp == 4)
+				wr32(fb.base + py * fb.stride + px * 4, c);
+		}
+}
+
+/*
+ * Read the report on every IRQ-low sample (GPIO 19, falling edge in DT) and
+ * every 50 ms regardless. Fingers leave dots: yellow id 0, white others.
+ * Decoding as fts_input_report_touch_pv2() / fts_input_report_touch().
+ */
+static void __attribute__((noreturn)) touch_loop(void)
+{
+	static uint8_t b[TOUCH_LEN];
+	uint64_t f = rsr("cntfrq_el0"), next_poll = 0, next_pet = 0, next_draw = 0;
+	uint32_t reads = 0, errs = 0, lows = 0, touches = 0, last_err = 0;
+	uint32_t pt[2] = { 0, 0 };
+	int top = con_row();
+
+	for (;;) {
+		uint64_t t = now();
+		int low = !(rd32(TLMM_IO(PIN_IRQ)) & 1);
+		if (t >= next_pet) {
+			smc(GH_WDT_PET, 0, 0, 0);
+			next_pet = t + f;
+		}
+		if (!low && t < next_poll)
+			continue;
+		next_poll = t + f / 20;
+		lows += low;
+		reads++;
+		int r = fts_read_buf(0x01, b, TOUCH_LEN);
+		if (r) {
+			errs++;
+			last_err = (uint32_t)-r << 24 | last_mirq;
+		} else if (!(b[1] == 0xff && b[2] == 0xff && b[3] == 0xff && b[4] == 0xff)) {
+			unsigned type = b[1] >> 4, num = b[1] & 0xf;
+			for (unsigned i = 0; i < 10; i++) {
+				unsigned base, id, flag;
+				uint32_t x, y;
+				if (type == 2) {
+					if (i >= num)
+						break;
+					base = 4 + 8 * i;
+					x = ((b[base] & 0xfU) << 12 | (uint32_t)b[base + 1] << 4 |
+					     b[base + 4] >> 4) / 16;
+					y = ((b[base + 2] & 0xfU) << 12 | (uint32_t)b[base + 3] << 4 |
+					     (b[base + 4] & 0xfU)) / 16;
+				} else if (type == 0) {
+					base = 2 + 6 * i;
+					if ((b[base + 2] >> 4) >= 10)
+						break;
+					x = (b[base] & 0xfU) << 8 | b[base + 1];
+					y = (b[base + 2] & 0xfU) << 8 | b[base + 3];
+				} else {
+					break;
+				}
+				id = b[base + 2] >> 4;
+				flag = b[base] >> 6;
+				if (i < 2)
+					pt[i] = id << 28 | flag << 24 | x << 12 | y;
+				if (flag != FTS_UP) {
+					dot(x, y, id ? WHITE : YELLOW);
+					touches++;
+				}
+			}
+		}
+		if (t < next_draw)
+			continue;
+		next_draw = t + f / 5;
+		con_set_row(top);
+		con_hex2("TOUCH", "reads=", reads, "errs=", errs);
+		con_hex2(" ", "irqlow=", lows, "dots=", touches);
+		con_hex2(" raw", "b0-3=", (uint32_t)b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3],
+			 "b4-7=", (uint32_t)b[4] << 24 | b[5] << 16 | b[6] << 8 | b[7]);
+		con_hex2(" pts", "p0=", pt[0], "p1=", pt[1]);
+		con_hex2(" ", "lasterr=", last_err, "g19=", rd32(TLMM_IO(PIN_IRQ)));
+	}
+}
+#endif
+
 void probe_irq(void)
 {
 }
@@ -392,7 +539,11 @@ void shim_main(uint64_t dtb)
 	stage = "fb";
 	fb_detect();
 	con_clear(NAVY);
+#ifdef PROBE8
+	con_str("PROBE", "asteroids probe 8 (touch, GPI)");
+#else
 	con_str("PROBE", "asteroids probe 5 (touch)");
+#endif
 	status_row = con_row();
 	con_skip();
 	con_skip();
@@ -441,6 +592,14 @@ void shim_main(uint64_t dtb)
 		con_str("GENI", "SE0 is not SPI / no FIFO: stop");
 		goto out;
 	}
+#ifdef PROBE8
+	stage = "gpi";
+	if (gpi_init()) {
+		gpi_dump();
+		con_str("GPI", "channel setup failed: stop");
+		goto out;
+	}
+#endif
 
 	stage = "fts";
 	uint8_t id1 = 0, id2 = 0, fw = 0;
@@ -449,6 +608,13 @@ void shim_main(uint64_t dtb)
 	fts_read_reg("FW 0xA6", 0xa6, &fw);
 	con_hex2("CHIP", "a3/9f=", id1 << 8 | id2, "fw=", fw);
 	con_hex2(" irq", "g19io=", rd32(TLMM_IO(PIN_IRQ)), 0, 0);
+#ifdef PROBE8
+	if (last_mirq >> 16 == 0)	/* no GPI event at all */
+		gpi_dump();
+	stage = "touch";
+	con_str("TOUCH", "touch the screen; vol- + power exits");
+	touch_loop();
+#endif
 
 out:
 	stage = "done";

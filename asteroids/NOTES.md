@@ -152,6 +152,28 @@ Run 10 build (17:38): rx_buf canary 0xA5; route SID 0x563 (QUP0 wrapper / SE
 DMA) to CB0 as well; "LOOP" step = 16-byte frame with config0 loopback flag
 (GSI_LOOPBACK_EN): same=0x10 means GPI moves data both ways, A5 = RX write
 dropped, 00 = TX read zero / no RX.
+**Probe 8 run 10 (17:40, photo + user report): TOUCH WORKS.** Loopback rx
+01122334 45566778, same=0x10 (DMA both ways). Chip ID reads with CRC ok:
+**0xA3/0x9F = 0x56/0x72 = FocalTech FT3683G, FW 0xA6 = 0x41.** Touch loop 0xBD reads,
+0 errors, report FF.. when idle; user: dots appear wherever the screen is touched
+(coordinates map 1:1 to the 1080x2392 panel). sGFSR still 0 throughout.
+**The difference from run 9 was routing SID 0x563** (QUP0 wrapper, live DT
+qupv3_0_geni_se iommus) to CB0: the SE/QUP data path masters with 0x563, the
+GPI ring/event traffic with 0x576. Commit with these results: see git log.
+
+**Recipe for XNU touch on asteroids (all verified by probe 8, run 10):**
+1. TLMM GPIO 0-3 func 1 6 mA, GPIO 20 reset out low, GPIO 19 in pull-up.
+2. RPMh AMC: ldob11 1800 mV, ldob22 3300 mV (VRM), BCM SN3 0x60004001.
+3. GCC 0x52008 |= 0x1f << 18, wait SE0 CBCR on; 2 ms, reset high, 200 ms.
+4. apps SMMU (Gunyah-emulated; plain single ldr/str only!): free SMR slots ->
+   S2CR copied from UFS's (SMR 0, S2CR 0 = CB0), SMR = valid | 0x576 and
+   valid | 0x563. sCR0 GFRE|GFIE were also cleared in this run; untested whether
+   still needed once 0x563 is routed (it stopped the reset in run 9).
+5. SE0 GSI mode (geni_se_select_gpi_mode), GPII 0 init as gpi.c, config0 (div 20
+   on DFS level 0) + GO full duplex + TX/RX DMA TREs; FocalTech SPI v2 framing,
+   touch report = 84 bytes at reg 0x01 (protocol v2 layout).
+Open: interrupts (GPI GIC SPI 0x1b1, touch GPIO 19 falling edge) instead of
+polling; test without the sCR0 change.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

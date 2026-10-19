@@ -29,8 +29,17 @@ cpu1-7 "CPU_ON target=0xN00 entry_pa=0x8c148e000 context=N", "PSCI CPU_ON rc=0",
 "mpidr=0xN00 came alive; SGI1 OK"; "8/8 CPUs initialized, SGI1 verified";
 "mcache: 8 CPU(s)"; then the same root wait. No change was needed for Gunyah.
 
-Next: decide the root filesystem with the user (userdata -> iOS root is
-destructive; alternative: small ramdisk root via mkpayload --ramdisk, rd=md0).
+**15:17: user chose: wipe userdata for the iOS root** (option 1; flash still to
+be confirmed once more right before it). Preparation on the Linux PC:
+IPSW 16.7.16 20H392 -> `research/ipsw-x/iPhone10,3_16.7.16_20H392_Restore.ipsw`
+(Apple CDN, 6171035648 B); `lzfse` and `apfs-fuse` (sgan81, LZBITMAP ok) built
+from source into ~/.local/bin; user installed hfsprogs + libfuse3-dev.
+`asteroids/mkroot.sh IPSW OUTDIR` (user runs it in a terminal: sudo) = mkiosroot.sh
++ fsck + sweet-root-tweaks.py + img2simg -> `ios16-root-20H392-a1.img/.simg`.
+Then: d22ap.adt for /product (adt.py unwrap), boot image with
+`rd=ufsroot0 ufsrw=1 rootrw=1 ...` (needs ASTEROIDS_ALLOW_UFS_WRITES=yes),
+`fastboot -S 512M flash userdata ...simg`. Expect no touch/buttons (sweet
+drivers are gated off on asteroids).
 
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 

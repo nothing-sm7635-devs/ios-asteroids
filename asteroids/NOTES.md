@@ -41,6 +41,22 @@ Then: d22ap.adt for /product (adt.py unwrap), boot image with
 `fastboot -S 512M flash userdata ...simg`. Expect no touch/buttons (sweet
 drivers are gated off on asteroids).
 
+**15:32 image a1 built** (user ran mkroot.sh): `research/ipsw-x/ios16-root-20H392-a1.img`
+(16 GB HFS+J case-sensitive, 12 GB used, fsck OK) + `.simg` 12145344808 B + `.sha256`.
+Tweaks applied except "no mobileactivationd system container; skipped data ark"
+(activation relies on the ADT Hactivation path). OS 087-86698-044, SystemOS
+087-86593-047, AppOS 087-86715-047. `research/ipsw-x/d22ap.adt` extracted
+(/product: iPhone X). Boot image `asteroids/out/root1-boot.img` (args: debug=0xc
+serial=3 cpus=8 keepsyms=1 -enable_kprintf_spam -noprogress rd=ufsroot0
+unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1
+rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30).
+
+**USERDATA WIPED, user confirmed ("flash"): 10:03:38-10:09:15 UTC
+`fastboot -S 512M flash userdata ...a1.img.simg`, 24/24 chunks OKAY**
+(`research/flash-userdata-a1.log`). LineageOS data is gone; to restore Android:
+`fastboot -w`. userdata = iOS root a1 until the first rw boot changes it.
+10:09:48 UTC `fastboot boot asteroids/out/root1-boot.img` (sent OKAY).
+
 ## >>> READ FIRST: handoff 2026-10-19 ~15:05 (state, next step, how to run) <<<
 
 **Where we are.** Probes done; the boot chain up to xnu works on the phone

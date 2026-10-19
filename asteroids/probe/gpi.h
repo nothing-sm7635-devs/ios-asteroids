@@ -15,6 +15,8 @@ int gpi_smmu_route(void);
 int gpi_stage_test(void);
 /* Print the SMMU global fault status and syndromes (SID in syn1). */
 void gpi_smmu_faults(void);
+/* config0 flags for the next frames (1 = SE loopback). */
+void gpi_spi_flags(uint32_t flags);
 /* Print GPII / channel state (after a failure). */
 void gpi_dump(void);
 

@@ -141,6 +141,17 @@ at the SMMU -> bus error -> TZ reset. Run 9 build (17:36): after routing, sCR0
 GFRE|GFIE cleared (global faults RAZ/WI, no abort/interrupt), sCR0 printed after
 the screen clear, LOCK/UNLOCK kept as event sanity, and after "SPI tx" sGFSR +
 sGFSYNR0/1/2 (syn1 = faulting SID) are printed.
+**Probe 8 run 9 (17:37, photo): NO RESET, frames complete.** sCR0 now 0x002B0400
+(write took). SPI tx: event d2 0x0200000A (EOT, 10 bytes) d3 0x00220003, 206 us;
+sGFSR/syn0-2 all 0. Full-duplex chip-ID reads: gpi_status 0x000N0202 = EOT on
+TX and RX; **but all RX bytes 0** -> CRC fail (-3) on every read; touch loop
+0x29E reads, all errors; **IRQ GPIO 19 seen low 0x137 times** (chip firmware
+alive, guess). Interpretation (guess): a fault still happens, now silent RAZ/WI
+(clearing GFRE/GFIE is what stopped the reset), though sGFSR stays 0.
+Run 10 build (17:38): rx_buf canary 0xA5; route SID 0x563 (QUP0 wrapper / SE
+DMA) to CB0 as well; "LOOP" step = 16-byte frame with config0 loopback flag
+(GSI_LOOPBACK_EN): same=0x10 means GPI moves data both ways, A5 = RX write
+dropped, 00 = TX read zero / no RX.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

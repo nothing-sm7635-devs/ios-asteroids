@@ -104,6 +104,7 @@ static uint8_t tx_buf[GPI_BUF] __attribute__((aligned(64)));
 static uint8_t rx_buf[GPI_BUF] __attribute__((aligned(64)));
 static unsigned tx_wp, rx_wp, ev_rp, ev_wp, n_ev;
 static int configured;
+static uint32_t c0_flags;	/* GSI_LOOPBACK_EN 1, CPHA 0x10, CPOL 0x20 */
 static uint32_t last_ev[4], last_codes, bad_rp, n_xfer;
 
 static uint32_t pa(const void *p) { return (uint32_t)(uintptr_t)p; }
@@ -186,13 +187,10 @@ void gpi_smmu_check(void)
  * (arm_smmu_write_sme order: S2CR, then SMR). Runtime only; a reset clears it.
  * Returns -1 if the entry does not read back (e.g. the write is dropped).
  */
-int gpi_smmu_route(void)
+static int route_sid(uint32_t sid)
 {
-	uint32_t scr0 = rd32(SMMU + SMMU_sCR0);
-	unsigned nsmr = rd32(SMMU + SMMU_ID0) & 0xff, exid = (scr0 >> 3) & 1;
+	unsigned nsmr = rd32(SMMU + SMMU_ID0) & 0xff;
 	int ufs = -1, slot = -1;
-	if (exid)
-		return -1;	/* layout not handled; run 3 had EXIDENABLE 0 */
 	for (unsigned n = 0; n < nsmr; n++) {
 		uint32_t r = rd32(SMMU + SMMU_SMR(n));
 		if (r >> 31) {
@@ -206,7 +204,7 @@ int gpi_smmu_route(void)
 		con_hex2("ROUTE", "ufs=", (uint32_t)ufs, "slot=", (uint32_t)slot);
 		return -1;
 	}
-	uint32_t s2cr = rd32(SMMU + SMMU_S2CR(ufs)), smr = 1U << 31 | 0x576;
+	uint32_t s2cr = rd32(SMMU + SMMU_S2CR(ufs)), smr = 1U << 31 | sid;
 	wr32(SMMU + SMMU_S2CR(slot), s2cr);
 	__asm__ volatile("dsb sy" ::: "memory");
 	wr32(SMMU + SMMU_SMR(slot), smr);
@@ -214,7 +212,19 @@ int gpi_smmu_route(void)
 	uint32_t rs = rd32(SMMU + SMMU_SMR(slot)), rc = rd32(SMMU + SMMU_S2CR(slot));
 	con_hex2("ROUTE", "slot=", (uint32_t)slot, "s2cr=", rc);
 	con_hex2(" ", "smr=", rs, "gfsr=", rd32(SMMU + SMMU_sGFSR));
-	if (rs != smr || rc != s2cr)
+	return rs == smr && rc == s2cr ? 0 : -1;
+}
+
+/*
+ * GPI (0x576) and, since run 9, the QUP0 wrapper (0x563, SE DMA in the
+ * live DT) both go to CB0 like UFS.
+ */
+int gpi_smmu_route(void)
+{
+	uint32_t scr0 = rd32(SMMU + SMMU_sCR0);
+	if ((scr0 >> 3) & 1)
+		return -1;	/* EXIDENABLE layout not handled; run 3 had 0 */
+	if (route_sid(0x576) || route_sid(0x563))
 		return -1;
 	/*
 	 * Run 8 reset once SE0 ran a frame, with the CPU only polling memory.
@@ -393,8 +403,8 @@ int gpi_stage_test(void)
 	con_hex2("sCR0", "now=", rd32(SMMU + SMMU_sCR0), "gfsr=", rd32(SMMU + SMMU_sGFSR));
 	/* run 8: NOP (IEOB), LOCK, UNLOCK each wrote an EOB event in ~17 us */
 	(void)nop;
-	step("LOCK", 0, lock, 1);
-	step("UNLOCK", 0, unlock, 1);
+	(void)lock;
+	(void)unlock;
 
 	/* TX-only: config0, GO SPI_TX_ONLY (chain, no RX link), TX DMA (IEOT) */
 	static const uint8_t hdr[10] = { 0xa3, 0xa0, 0, 1 };
@@ -411,6 +421,26 @@ int gpi_stage_test(void)
 	gpi_smmu_faults();
 	if (!ok)
 		return -1;
+
+	/*
+	 * Run 9: frames complete (EOT both ways) but RX is all zero. SE0
+	 * loopback takes the touch chip out: RX must equal TX if the GPI moves
+	 * data both ways; A5 = RX write dropped, 00 = TX read zeros or no RX.
+	 */
+	countdown("LOOP in", 3);
+	static uint8_t pat[16], got[16];
+	for (unsigned i = 0; i < 16; i++)
+		pat[i] = (uint8_t)(0x11 * i + 0x01);
+	gpi_spi_flags(1);
+	int lr = gpi_spi_xfer(pat, got, 16);
+	unsigned same = 0;
+	for (unsigned i = 0; i < 16; i++)
+		same += got[i] == pat[i];
+	con_hex2(" rx", "0-3=", (uint32_t)got[0] << 24 | got[1] << 16 | got[2] << 8 | got[3],
+		 "4-7=", (uint32_t)got[4] << 24 | got[5] << 16 | got[6] << 8 | got[7]);
+	con_hex2(" ", "same=", same, "st=", (uint32_t)lr << 24 | (gpi_status() & 0xffff));
+	gpi_smmu_faults();
+	gpi_spi_flags(0);
 	countdown("FULL in", 3);
 	return 0;
 }
@@ -421,17 +451,23 @@ uint32_t gpi_status(void)
 	return last_codes;
 }
 
+void gpi_spi_flags(uint32_t flags)
+{
+	c0_flags = flags;
+	configured = 0;	/* next frame starts with a new config0 TRE */
+}
+
 int gpi_spi_xfer(const uint8_t *tx, uint8_t *rx, unsigned n)
 {
 	if (n > GPI_BUF)
 		return -1;
 	for (unsigned i = 0; i < n; i++) {
 		tx_buf[i] = tx[i];
-		rx_buf[i] = 0;
+		rx_buf[i] = 0xa5;	/* canary: survives if the RX write is dropped */
 	}
 	/* setup_config0_tre() once, setup_go_tre(), setup_dma_tre() */
 	if (!configured) {
-		put_tre(tx_ring, &tx_wp, PACK_TX_RX << 24 | 0 << 8 | WORD_LEN, 0,
+		put_tre(tx_ring, &tx_wp, PACK_TX_RX << 24 | c0_flags << 8 | WORD_LEN, 0,
 			0U << 16 | CLK_DIV, 2U << 20 | 2U << 16 | 1);
 		configured = 1;
 	}

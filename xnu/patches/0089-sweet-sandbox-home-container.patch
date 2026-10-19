@@ -1,0 +1,72 @@
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -33,6 +33,7 @@
+ #include <sys/mount.h>
+ #include <sys/priv.h>
+ #include <sys/proc.h>
++#include <sys/proc_internal.h>
+ #include <sys/systm.h>
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode.h>
+@@ -364,6 +365,51 @@ sweet_sandbox_check_execve(kauth_cred_t old __unused, struct vnode *vp __unused,
+ 	return 0;       /* no label update */
+ }
+ 
++/*
++ * No recorded container (the real Sandbox derives it at exec, not from the
++ * spawn attributes these launches carry): use the caller's own HOME, which
++ * launchd/xpcproxy point at the process's data container. Only for the
++ * calling process (PlugInKit asks for getpid()); scans the end of its
++ * exec strings area [user_stack - p_argslen, user_stack) for "HOME=".
++ */
++#define SWEET_ENVSCAN_MAX       (32 * 1024)
++static size_t
++sweet_home_of_self(char *path, size_t size)
++{
++	proc_t p = proc_self();
++	if (p == NULL) {
++		return 0;
++	}
++	size_t argslen = p->p_argslen;
++	user_addr_t stack = p->user_stack;
++	proc_rele(p);
++	size_t n = argslen < SWEET_ENVSCAN_MAX ? argslen : SWEET_ENVSCAN_MAX;
++	if (stack == 0 || n < 6) {
++		return 0;
++	}
++	char *buf = kalloc_data(n + 1, Z_WAITOK);
++	if (buf == NULL) {
++		return 0;
++	}
++	size_t found = 0;
++	if (copyin(stack - n, buf, n) == 0) {
++		buf[n] = '\0';
++		for (size_t i = 0; i + 5 < n; i++) {
++			/* a string start: the area start (if read whole) or after a NUL */
++			if ((i == 0 ? n == argslen : buf[i - 1] == '\0') &&
++			    strncmp(buf + i, "HOME=", 5) == 0 && buf[i + 5] == '/') {
++				found = strlcpy(path, buf + i + 5, size);
++				if (found >= size) {
++					found = 0;
++				}
++				break;
++			}
++		}
++	}
++	kfree_data(buf, n + 1);
++	return found;
++}
++
+ /* op 4: copy the recorded container path of a pid to the caller's buffer. */
+ static int
+ sweet_container_path(user_addr_t arg)
+@@ -395,6 +441,9 @@ sweet_container_path(user_addr_t arg)
+ 		}
+ 	}
+ 	lck_mtx_unlock(&sweet_container_lock);
++	if (plen == 0 && (req.pid == 0 || req.pid == proc_selfpid())) {
++		plen = sweet_home_of_self(path, sizeof(path));
++	}
+ 	if (plen == 0) {
+ 		return ENOENT;
+ 	}

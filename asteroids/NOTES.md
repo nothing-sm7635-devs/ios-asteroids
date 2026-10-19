@@ -351,6 +351,18 @@ applies on 0087 + blacktop, NOT built): mpo_cred_check_label_update_execve recor
 container path from the "Sandbox" spawn attributes per process (unique ID, 256-entry table)
 and op 4 returns it; logs "SWEET Sandbox: <name>[pid] container <path>" (first 32). No
 re-flash needed (runtime only).
+**cont1 (CI kernel with 0088 incl. the PROC_NULL fix, sha256 28c4c629...f128ff7, 19:02 UTC,
+`logs/asteroids-cont1.txt`): 0088 had no effect** - no "container" line at all, same crash loops
+(AegirPoster 24x, Siri TTS / MacinTalk / Kona 10x each), same "plugin has invalid sandbox or
+container: error 2". mpo_cred_check_label_update_execve runs on every exec
+(exec_handle_sugid), so these launches carry no container in the "Sandbox" spawn attributes
+(the real Sandbox derives it at exec). PlugInKit (0x1aaf39cb0) only needs rc 0 and
+strlen(path) > 1. **xnu 0089** (`0089-sweet-sandbox-home-container.patch`, applies on 0088 +
+blacktop, NOT built): op 4 falls back to the caller's own HOME= (scan of the last 32 KiB of
+[user_stack - p_argslen, user_stack)) when no container was recorded; self only.
+GPU: not a bring-up item - iOS rendering is Metal on Apple AGX (closed kext + AGXMetal user
+driver); Adreno 710 would need an XNU GPU driver + Mesa Turnip-class userland + a Metal layer
+(research project). Kept CPU rendering; next: why home/widget screens go black.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

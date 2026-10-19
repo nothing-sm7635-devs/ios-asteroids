@@ -609,7 +609,7 @@ void shim_main(uint64_t dtb)
 	con_hex2("CHIP", "a3/9f=", id1 << 8 | id2, "fw=", fw);
 	con_hex2(" irq", "g19io=", rd32(TLMM_IO(PIN_IRQ)), 0, 0);
 #ifdef PROBE8
-	if (last_mirq >> 16 == 0)	/* no GPI event at all */
+	if (id1 != 0x56)	/* no FocalTech answer: show where GPI stands */
 		gpi_dump();
 	stage = "touch";
 	con_str("TOUCH", "touch the screen; vol- + power exits");

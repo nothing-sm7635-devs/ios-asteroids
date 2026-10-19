@@ -104,7 +104,7 @@ static uint8_t tx_buf[GPI_BUF] __attribute__((aligned(64)));
 static uint8_t rx_buf[GPI_BUF] __attribute__((aligned(64)));
 static unsigned tx_wp, rx_wp, ev_rp, ev_wp, n_ev;
 static int configured;
-static uint32_t last_ev[4], last_codes;
+static uint32_t last_ev[4], last_codes, bad_rp, n_xfer;
 
 static uint32_t pa(const void *p) { return (uint32_t)(uintptr_t)p; }
 static uint32_t state(uintptr_t cntxt) { return (rd32(cntxt + C_CONFIG) >> 20) & 0xf; }
@@ -149,6 +149,7 @@ void gpi_dump(void)
 	con_hex2(" rp", "ch0=", rd32(CH_CNTXT(0) + C_RP_LO), "ch1=", rd32(CH_CNTXT(1) + C_RP_LO));
 	con_hex2(" rp", "ev=", rd32(EV_CNTXT + C_RP_LO), "ring=", pa(ev_ring));
 	con_hex2(" lastev", "d2=", last_ev[2], "d3=", last_ev[3]);
+	con_hex2(" ", "badrp=", bad_rp, "xfers=", n_xfer);
 }
 
 int gpi_init(void)
@@ -213,7 +214,9 @@ int gpi_init(void)
 	for (unsigned k = 0; k < 2; k++)
 		if (gpi_cmd(0, k, OP_START, ST_STARTED))
 			return -1;
-	con_hex2("GPI up", "ch0=", rd32(CH_CNTXT(0)), "ev=", rd32(EV_CNTXT));
+	con_hex2("GPI up", "ch0=", rd32(CH_CNTXT(0)), "ch1=", rd32(CH_CNTXT(1)));
+	con_hex2(" ", "ev=", rd32(EV_CNTXT), "evrp=", rd32(EV_CNTXT + C_RP_LO));
+	con_hex2(" ", "ring=", pa(ev_ring), "txring=", pa(tx_ring));
 	return 0;
 }
 
@@ -256,12 +259,21 @@ int gpi_spi_xfer(const uint8_t *tx, uint8_t *rx, unsigned n)
 	wr32(CH_DB(0), pa(&tx_ring[tx_wp]));
 	wr32(CH_DB(1), pa(&rx_ring[rx_wp]));
 
+	if (!n_xfer++)
+		con_hex2("GPI db", "evrp=", rd32(EV_CNTXT + C_RP_LO),
+			 "chrp=", rd32(CH_CNTXT(0) + C_RP_LO));
+
 	/* gpi_process_events(), polled */
 	uint32_t txc = 0, rxc = 0;
 	uint64_t end = now() + rsr("cntfrq_el0") / 20;	/* 50 ms */
 	while (now() < end && !(txc && rxc)) {
 		uint32_t hw = rd32(EV_CNTXT + C_RP_LO);
 		int got = 0;
+		/* an RP outside the ring would never match ev_rp */
+		if (hw - pa(ev_ring) >= sizeof(ev_ring) || (hw & 15)) {
+			bad_rp = hw;
+			break;
+		}
 		while (pa(&ev_ring[ev_rp]) != hw) {
 			const struct tre *e = &ev_ring[ev_rp];
 			for (int i = 0; i < 4; i++)

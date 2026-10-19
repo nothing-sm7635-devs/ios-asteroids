@@ -70,6 +70,14 @@ tx 02 = EOT, rx ff = RX TRE consumed without event), "TOUCH reads/errs",
 (guesses): apps SMMU passes SID 0x576 untranslated as for UFS; QUP0->DDR path
 works without an interconnect vote. Read-only for storage; vol- + power exits.
 Run: phone in fastboot, `fastboot boot asteroids/probe/out/probe8-boot.img`.
+**Probe 8 run 1 (17:13, photo):** bring-up as probe 5 (rails ok, s0 clock on,
+reset released), gsi dma=1 ev=0xF, GPII0 all 0 before (not allocated, type 0),
+**"GPI up" ch0=0x1020000A (STARTED, el 16, out, GPI) ev=0x10110002 (ALLOCATED)**,
+then the screen froze before the first "ID" line, no reset. Cause unknown; likely
+my event loop: it spun forever if the HW event RP is outside the ring (no bound
+check) - or a stalled register read. Fixed (17:14): RP sanity check (badrp=),
+"GPI up" also shows ch1/evrp/ring addresses, a one-time "GPI db" line after the
+first doorbell, gpi_dump when the chip ID is not 0x56.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

@@ -16,7 +16,7 @@
 #include "ufs.h"
 
 #define UFS_BASE	0x01d84000UL	/* ufshc@1d84000, volcano DT */
-#define DATA_LUN	1		/* sdb: super, metadata, userdata */
+#define DATA_LUN	0		/* = Linux sdb (super, metadata, userdata); sdX order != LUN */
 #define UFS_DEVICE_WLUN	0xd0		/* well-known LUN "UFS Device" (power modes) */
 
 #define REG_CAP		0x00

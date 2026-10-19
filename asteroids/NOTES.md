@@ -18,9 +18,24 @@ Owner's LineageOS 24 userdebug build (`adb root` works), kernel source at
   (read off the screen by the user).
 - **Probe 2 ran (commit e54c295, `build.sh 2`)**: SGIs all fine (see below);
   UFS transport works but every SCSI command gets CHECK CONDITION.
-- Next: probe 3 = decode the UFS sense data; if NOT READY, START STOP UNIT
-  (power condition ACTIVE) to the UFS Device W-LUN 0xD0 as Linux does, then
-  TUR / READ CAPACITY / LUN 1 GPT again. Also check GICR IPRIORITYR byte writes.
+- **Probe 3 ran (commit 0fd195d, `build.sh 3`)**: UFS works after START STOP UNIT
+  (ACTIVE) to W-LUN 0xD0; LUN 0 = Linux sdb. Byte write to GICR_IPRIORITYR is
+  stored, but then 0/10 SGI1 arrive.
+- Next: probe 3b (same `build.sh 3`): GPT of LUN 0, and word-written priority
+  0x80 vs 0xa0 to tell "byte access" from "value 0x80".
+
+## Probe 3 results (observed, photo 2026-10-19 14:35)
+
+| Item | Value |
+| --- | --- |
+| Sense before wake | TUR LUN0/LUN1: key 2 ASC 00 ASCQ 00 (NOT READY); TUR W-LUN 0xD0: 02/04/02 (not ready, initializing command required) |
+| SSU ACTIVE to 0xD0 | rc 0; afterwards TUR LUN0 and LUN1 rc 0 |
+| LUN last LBAs (4K) | LUN0 0x03A8BFFF (= sdb 251456913408 B, photo font shows 8 like B), LUN1 0x13FF, LUN2 0x13FF (20 MiB: sda/sdc), LUN3 0x1FFF (32 MiB sdd), LUN4 0xFFFFF (4 GiB sde), LUN5 0x1FFF (32 MiB sdf) |
+| READ LUN1 LBA 0-1 | rc 0, MBR AA55 type EE, GPT "EFI PART", 32 entries at LBA 2 (all < 64 MiB, none listed) |
+| GICR byte write | IPRIORITYR word A0A0A0A0 -> byte 0x80 at +1 -> reads A0A080A0, then SGI1 x10 unmasked: **0 arrived**, RPR FF |
+
+So ABL leaves the UFS device in a low-power state; XNU's UFS driver must send SSU
+ACTIVE first. Linux sdX letters do not follow LUN numbers.
 
 ## Probe 2 results (observed, photo 2026-10-19 14:31)
 

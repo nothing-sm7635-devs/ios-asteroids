@@ -254,6 +254,19 @@ static void __attribute__((unused)) test_sgi(void)
  * Probe 3: does Gunyah's vGIC take byte writes to GICR_IPRIORITYR? (probe 1
  * wrote bytes and got 1/10 SGIs, probe 2 wrote words and got 10/10)
  */
+/* 10 self-SGI1s with IRQs unmasked, 5 ms apart: how many arrived */
+static uint32_t sgi1_burst(void)
+{
+	uint32_t c0 = sgi_count[0][1];
+	irq_on();
+	for (int i = 0; i < 10; i++) {
+		send_sgi(0, 1);
+		delay_ms(5);
+	}
+	irq_off();
+	return sgi_count[0][1] - c0;
+}
+
 static void __attribute__((unused)) test_prio_bytes(void)
 {
 	stage = "prio bytes";
@@ -268,14 +281,12 @@ static void __attribute__((unused)) test_prio_bytes(void)
 	con_hex2("PRIO b", "before=", before, "after=", after);	/* works: A0A080A0 */
 
 	/* and with SGI1 at the byte-written priority, is it delivered? */
-	uint32_t c0 = sgi_count[0][1];
-	irq_on();
-	for (int i = 0; i < 10; i++) {
-		send_sgi(0, 1);
-		delay_ms(5);
-	}
-	irq_off();
-	con_hex2(" sgi1", "got=", sgi_count[0][1] - c0, "rpr=", rsr("icc_rpr_el1"));
+	con_hex2(" sgi1", "got=", sgi1_burst(), "rpr=", rsr("icc_rpr_el1"));
+	/* same priority value 0x80 as a word write: value or access size? */
+	wr32(r + GICR_IPRIORITYR, 0xa0a080a0);
+	con_hex2("PRIO w80", "now=", rd32(r + GICR_IPRIORITYR), "got=", sgi1_burst());
+	wr32(r + GICR_IPRIORITYR, 0xa0a0a0a0);
+	con_hex2("PRIO wa0", "now=", rd32(r + GICR_IPRIORITYR), "got=", sgi1_burst());
 	wr32(r + GICR_ICENABLER0, 0xffffffff);
 }
 
@@ -286,7 +297,7 @@ void shim_main(uint64_t dtb)
 	fb_detect();
 	con_clear(NAVY);
 #ifdef PROBE3
-	con_str("PROBE", "asteroids probe 3");
+	con_str("PROBE", "asteroids probe 3b");
 #else
 	con_str("PROBE", "asteroids probe 2");
 #endif

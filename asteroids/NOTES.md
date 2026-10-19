@@ -218,6 +218,17 @@ starting in 45 s", RPMh ldob11/ldob22/SN3 done. **No CRASH Preferences** (crashe
 mediaserverd x2 sig 6, PosterBoard sig 5, driverkitd); Preferences exec'd twice, no
 exit reason logged -> About is probably a hang, not the sweet crash. touch2 (13:22:38
 UTC) = touch1 + `sweetsample=Preferences,SpringBoard` to sample Settings' threads.
+**touch2 result (`logs/asteroids-touch2.txt`):** Preferences main thread (2 samples):
+`-[PSGAboutDataSource _macAddress]` -> `_SCNetworkInterfaceCopyAllWithPreferences` ->
+dispatch_once wait; t1 holds it in `__wait_for_IOKit_to_quiesce` ->
+`SCDynamicStoreNotifyWait` (also blocks `hasEthernetNetworkInterfaces`). configd
+source (`research/configd-1241`, tag configd-1241.140.6): SCNetworkInterface.c:4894
+waits for Plugin:InterfaceNamer to hold Quiet / Complete (iOS) / Timeout.
+Plugins/InterfaceNamer/ifnamer.c setup_IOKit(): busy-interest notification on the
+IOService root + IOServiceGetBusyState, then a 300 s timer (WaitStackTimeout) that
+writes Timeout; any earlier failure returns without a timer (logs only to os_log).
+So: IOKit never quiet AND (setup failed or plugin thread stuck). touch3 (13:29:43
+UTC) samples configd + Preferences to see which.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

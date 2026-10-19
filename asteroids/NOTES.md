@@ -304,6 +304,26 @@ lsd, lsd.system, chronod, assetsd), sha256 0b8e4990...; FLASHED (user confirmed)
 16:05:38 UTC, 24/24 OKAY (`research/flash-userdata-a2.log`). userdata = fresh a2 (first boot
 rebuilds the LS database again). Boot `asteroids/out/dbg1-boot.img` = fix1 args +
 `sweetbusy=0 sweetscan=assetsd,PosterBoard sweetnull=PosterBoard,pkd,lsd,chronod,assetsd`.
+**dbg1 result:** the sweetnull tee caught nothing (env verified in a2 by the user; daemons'
+os_log does not reach stderr). Instead: **full unified log** - copied the iOS volume from
+recovery (`dd` of the first 16 GiB of userdata -> research/asteroids-dumps/userdata-ios-dbg1.img,
+read-only), user mounted it ro,force and copied /private/var/db/diagnostics + uuidtext into
+`research/asteroids-dumps/dbg1.logarchive` (4 uuidtext files unreadable: dirty journal),
+decoded with mandiant/macos-UnifiedLogs `unifiedlog_iterator -m log-archive` (built in the
+session scratchpad) -> `research/asteroids-dumps/dbg1-log.jsonl`, 2.6 M messages.
+**ROOT CAUSE (no wallpaper/widgets/extensions):** lsd: "Failed to read extension point cache
+... Error Domain=com.apple.extensionKit.errorDomain Code=12 \"Unable to find AMFI\"" ->
+MobileInstallation ignores every .appex ("specifies a value (com.apple.widgetkit-extension)
+for the NSExtensionPointIdentifier ..."); pkd "could not create extension point record ...
+-10814", "Candidate plugin count from LaunchServices: 0"; PosterBoard "extension point not
+found", "Received 0 extensions"; chronod widgetkit query "0 plugins". ExtensionFoundation
+(0x193735ca0): IOServiceMatching("AppleMobileFileIntegrity"), IOServiceOpen type 0,
+IOConnectCallMethod selector 6 (1 scalar, struct = cdhash) == 0 -> "cdhash ... is trusted".
+**xnu 0087** (`0087-sweet-amfi-service.patch`, applies on 0086 + blacktop, NOT built):
+iokit/Kernel/arm/SweetAMFI.cpp = AppleMobileFileIntegrity IOService (IOResources) + user
+client: selector 6 -> success, others kIOReturnUnsupported, all logged "SWEET AMFI: ...".
+The LS database is built once on first boot, so after the new kernel userdata needs a fresh
+image (re-flash a2) for the extensions to be registered.
 
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 

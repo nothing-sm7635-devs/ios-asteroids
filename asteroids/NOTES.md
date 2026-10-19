@@ -17,6 +17,15 @@ just slow; it completed this time. No touch / buttons yet (sweet drivers gated
 off): next = FocalTech touch on QUP SE0 SPI (GPIO 19 irq, 20 reset, L22B/L11B),
 PMK8550 PON keys.
 
+**Touch bring-up, probe 4 (read-only), 2026-10-19 16:30:** first run used TLMM base
+0xf000000 - WRONG: pinctrl-volcano.c adds REG_BASE 0x100000, GPIO n = 0xf100000 +
+n*0x1000. The read at 0xf013000 stalled the CPU and the phone reset (user held
+vol-: back to fastboot, Android not booted). Observed before that: GCC vote
+0x52008 = 0x48000900 (QUP0 bits 18-22 clear), SE0 CBCR 0x18004 = 0x80004000 (off),
+0x23000/0x23004 read 0, core 1x/2x 0x00004000 (on); SE0 RCG cmd 0x80000000 cfg
+0x00100000, **CMD_DFSR 0x21 (DFS on)**, PERF_DFSR l0 0x1 (TCXO 19.2 MHz), l1-l4
+0x2601 (GPLL0 even), l5 0x10b, l6 0x109 (GPLL0 main), l7 0.
+
 ## !!! DANGER while userdata holds iOS: NEVER let the phone boot Android !!!
 
 vendor_boot's fstab.default has userdata `latemount,wait,check,formattable,...`

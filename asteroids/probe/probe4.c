@@ -26,7 +26,7 @@
 #define GCC_S0_RCG	0x18010	/* CMD; CFG +4; CMD_DFSR +0x14; PERF_DFSR(l) +0x1c+4l */
 #define CBCR_OFF	(1U << 31)
 
-#define TLMM_BASE	0x0f000000UL
+#define TLMM_BASE	0x0f100000UL	/* pinctrl@f000000 + REG_BASE 0x100000 (pinctrl-volcano.c) */
 #define TLMM_CFG(n)	((n) * 0x1000UL)
 #define TLMM_IO(n)	((n) * 0x1000UL + 4)
 

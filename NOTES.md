@@ -43,6 +43,15 @@
     (ArmSmmu4K) and generated GMU headers are not public; firmware from the phone's vendor_b
     (research/gpu-fw-a810: sqe = rootstockos's pin, gmu/zap differ from their pins).
   * Not done: PMIC RTC (counter is read-only for HLOS; needs an offset store), IPIs stay SGIs (our probe 2: 10/10).
+* **Boot ast3 (2026-10-27, CI 40528048659, `sweetpanel=2 sweetcpufreq=gov sweeta810=4`), log pulled from Lineage recovery
+  (Advanced > Enable ADB, `adb root`, tools/sweet-log-pull.sh -> logs/ast3-panic.txt):**
+  * A810 modes 1-4 all OK: CX GDSC powered in 1 try (0x22f801 -> 0xf8228800), SMMU clocks on; GPU SMMU sCR0 0x2b0406
+    ID0 0x4c017e18 ID1 0x40000016 ID2 0x5511, 24 SMRs none valid (as rootstockos T4/T5); GMU pool 32 MiB clean; mode-5 gate 0.
+  * EPSS gov works: A520 up to 1804800, A720 2400000, A720+ 2496000 kHz.
+  * backboardd SIGSEGV (far 0) right after matching AppleARMBacklight (backlight-control), 3 times -> launchd "rebooting
+    due to critical process crashes: backboardd" -> reset path did nothing on asteroids -> "Halt/Restart Timed Out".
+  * 2003: sweetpanel default 1 (no backlight service); restart/power-off on asteroids panic at once with a message
+    (a reset would boot Android, which formats userdata; fastboot needs a PMIC reboot reason write, not done).
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 

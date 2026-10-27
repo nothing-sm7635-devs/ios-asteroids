@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/sweet_dsi_asteroids.c b/bsd/dev/sweet_dsi_asteroids.c
+index 9abf9ed..3556c84 100644
+--- a/bsd/dev/sweet_dsi_asteroids.c
++++ b/bsd/dev/sweet_dsi_asteroids.c
+@@ -14,7 +14,8 @@
+  *
+  * SweetFramebuffer.cpp (AppleCLCD) posts what iOS asked for (sweet_panel_post_level / sweet_panel_post_power); one
+  * kernel thread applies it, so the panel's sleeps never land on the framebuffer's vsync timer. Boot-arg sweetpanel=N
+- * (asteroids only): 0 off, 1 display off/on with iOS's power state, 2 also the AppleARMBacklight brightness service.
++ * (asteroids only): 0 off, 1 (default) display off/on with iOS's power state, 2 also the AppleARMBacklight brightness
++ * service (crashes iOS 26's backboardd as published now; see sweet_panel_mode).
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -212,7 +213,12 @@ sweet_panel_mode(void)
+ 	if (!sweet_board_asteroids()) {
+ 		return 0;
+ 	}
+-	int mode = 2;
++	/*
++	 * Default 1: with the AppleARMBacklight service published (2), iOS 26's backboardd dereferences NULL right
++	 * after it matches the service (asteroids boot ast3, three times, then launchd reboots: "critical process
++	 * crashes: backboardd"), as on the Poco F1 (patch 0249). The service needs what backboardd reads first.
++	 */
++	int mode = 1;
+ 	PE_parse_boot_argn("sweetpanel", &mode, sizeof(mode));
+ 	if (mode <= 0) {
+ 		printf("SWEET PANEL: off (sweetpanel=0)\n");
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+index 8228f52..50daaba 100644
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -220,6 +220,16 @@ sweet_reboot_restart(int panic_restart)
+ 	 */
+ 	int flush = sweet_ufs_flush_final();
+ 	printf("SWEET REBOOT: UFS cache flush -> %d%s\n", flush, flush == EBUSY ? " (busy, skipped)" : "");
++	/*
++	 * Nothing Phone (3a): a reset boots the boot partition, i.e. Android, whose fstab formats userdata (the iOS
++	 * root); reaching fastboot instead needs a PMIC reboot reason this kernel does not write yet. Stop here with
++	 * a message rather than reset, or wait 30 s for "Halt/Restart Timed Out" (the stock path does nothing).
++	 * Panics keep their own screen.
++	 */
++	if (sweet_board_asteroids() && !panic_restart && !sr_in_panic) {
++		panic("SWEET: iOS asked to restart. On the Nothing Phone (3a) a reset boots Android, which formats the "
++		    "iOS root: hold Power + Volume down for fastboot, then fastboot boot the iOS image again");
++	}
+ 	if (!sr_ready) {
+ 		return -1;
+ 	}
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index c6d113f..281bbd2 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -67,6 +67,16 @@ SweetPlatformExpert::haltRestart(unsigned int type)
+ 	case kPERestartCPU:
+ 		(void)sweet_reboot_restart(0);
+ 		break;
++	case kPEHaltCPU:
++		/*
++		 * Nothing Phone (3a): powered off, the next power-on boots the boot partition, i.e. Android, whose fstab
++		 * formats userdata (the iOS root). Stop with a message instead (same reason as sweet_reboot_restart).
++		 */
++		if (sweet_board_asteroids()) {
++			panic("SWEET: iOS asked to power off. On the Nothing Phone (3a) a power cycle boots Android, which "
++			    "formats the iOS root: hold Power + Volume down for fastboot instead");
++		}
++		break;
+ 	default:
+ 		break;
+ 	}

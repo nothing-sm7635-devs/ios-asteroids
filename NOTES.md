@@ -52,6 +52,7 @@
     due to critical process crashes: backboardd" -> reset path did nothing on asteroids -> "Halt/Restart Timed Out".
   * 2003: sweetpanel default 1 (no backlight service); restart/power-off on asteroids panic at once with a message
     (a reset would boot Android, which formats userdata; fastboot needs a PMIC reboot reason write, not done).
+  * Boot ast3b (same 2002 kernel, `sweetpanel=1 sweetcpufreq=gov sweeta810=4`): boots fine, "slightly faster" (user).
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 

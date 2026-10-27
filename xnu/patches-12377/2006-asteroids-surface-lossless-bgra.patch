@@ -1,0 +1,43 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 8eca04a..c1b78ef 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -137,6 +137,7 @@ static void sweet_surface_init_lock(void);
+ #define SWEET_LOWPOOL_MAX       0xfd000000ull   /* rmtfs (~0xfde01000) and what the modem is given above */
+ #define SWEET_LOWPOOL_COOL_MS   100
+ #define SWEET_FORMAT_BGRA       0x42475241
++#define SWEET_FORMAT_BGRA_LOSSLESS 0x26424741   /* '&BGA', kCVPixelFormatType_Lossless_32BGRA (GPU frame compression) */
+ 
+ /* Fixed reserved-memory regions of the Poco F1 live DT (reg values, not the node names). */
+ static const struct {
+@@ -680,6 +681,21 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	s->elementWidth = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementWidth", 1);
+ 	s->elementHeight = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementHeight", 1);
+ 	s->pixelFormat = sweet_dict_u32(props, "IOSurfacePixelFormat", 0);
++	/*
++	 * asteroids: backboardd asks for '&BGA' (lossless-compressed BGRA, one plane) when it composites some content
++	 * (the GradientPoster wallpaper, opening Settings), and QuartzCore's CPU renderer cannot draw into it: assertion
++	 * "found != slist->end()" in push_surface (ogl-context.cpp), backboardd SIGABRT, three times -> launchd reboots
++	 * (boot ast4-gpu4). There is no compression here, so the surface is plain BGRA with the same rows.
++	 */
++	const bool lossless = s->pixelFormat == SWEET_FORMAT_BGRA_LOSSLESS && sweet_board_asteroids();
++	if (lossless) {
++		static bool logged;
++		if (!logged) {
++			logged = true;
++			IOLog("SWEET SURF: '&BGA' (lossless BGRA) surfaces are created as plain BGRA\n");
++		}
++		s->pixelFormat = SWEET_FORMAT_BGRA;
++	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+ 	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
+@@ -693,7 +709,7 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	}
+ 	end = (uint64_t)s->offset + (uint64_t)s->bytesPerRow * sweet_div_up(s->height, s->elementHeight);
+ 
+-	OSArray *planes = OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo"));
++	OSArray *planes = lossless ? NULL : OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo"));
+ 	s->planeCount = 0;
+ 	if (planes != NULL) {
+ 		uint64_t next = s->offset;

@@ -80,6 +80,13 @@
     backboardd did NOT crash (frames swapping); no SWEET A810 line: the GPU thread starts at 10 s, the panic came
     before the 2nd 10 s flush -> most likely a stage >= 5 access. Fix in progress: A810_LOG syncs the persistent log
     after every A810 line from mode 5 on. Meanwhile ios26-ast4-gpu4 (same kernel, sweeta810=4) to test the rest.
+  * ast4-safe booted (user). Then ast4-gpu4 (sweetpanel=2, sweeta810=4), log logs/ast4-safe (named before the
+    boot-args were read; it IS gpu4): CoreBrightness works (brightness ramp to 64 nits, slider position, display
+    off/on rc 0). Opening Settings -> fastboot (the reboot-to-fastboot path works). Cause: backboardd SIGABRT x3,
+    "Assertion failed: (found != slist->end()), function push_surface, file ogl-context.cpp, line 1186", each right
+    after backboardd created an 828x1792 '&BGA' (0x26424741, lossless BGRA, 1 plane) surface (GradientPoster, then
+    Preferences) -> launchd "critical process crashes: backboardd". 2006: SweetSurface creates '&BGA' as plain BGRA
+    on asteroids. Clock: no offset file yet (fallback = build time, 2026-06-17).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

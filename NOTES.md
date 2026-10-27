@@ -25,7 +25,9 @@
   FocalTech-over-GPI driver from ios-sweet 0084 (`bsd/dev/sweet_touch_asteroids.c`, byte-identical) + bsd/conf/files +
   start on asteroids (Bergamota's SweetHIDTouch already maps panel -> canvas, so 0084's SweetHID hunk is not needed);
   sweet_keys.c with ios-sweet 0083's asteroids values (arbiter v7 layout, PON 0x013 RT 0x1310 bits 7/6, vol-up GPIO
-  0x18d, AI key TLMM 71 -> Menu/Home). Applies after 2000 (local git apply); CI pending.
+  0x18d, AI key TLMM 71 -> Menu/Home). CI 40512153712 failed (kmem_alloc_contig/KMA_* moved to
+  vm/vm_kern_xnu.h in 12377); one #include added to the driver -> CI 40519641571 OK. **Touch and buttons WORK on
+  iOS 26 (user, 2026-10-27, boot image asteroids/out/ios26-ast2-boot.img).**
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 

@@ -28,6 +28,21 @@
   0x18d, AI key TLMM 71 -> Menu/Home). CI 40512153712 failed (kmem_alloc_contig/KMA_* moved to
   vm/vm_kern_xnu.h in 12377); one #include added to the driver -> CI 40519641571 OK. **Touch and buttons WORK on
   iOS 26 (user, 2026-10-27, boot image asteroids/out/ios26-ast2-boot.img).**
+* `xnu/patches-12377/2002-asteroids-panel-cpufreq-a810.patch` (NOT run yet):
+  * Panel: `bsd/dev/sweet_dsi_asteroids.c`, port of rootstockos UniXNU-asteroids package/PanelProbe.cpp
+    (BSD-2-Clause-Patent, verified there as T37): DCS through DSI0's TPG FIFO; SweetFramebuffer asteroids branch.
+    Boot-arg `sweetpanel=0|1|2` (default 2): 1 display off/on with iOS's power state (sleep in/out), 2 also the
+    AppleARMBacklight brightness service (DBV 10..4095). On beryllium that service once crashed backboardd (0249).
+  * CPU frequency: sweet_cpufreq.c with an EPSS layout (rootstockos CpuFreqProbe.cpp facts): 3 domains
+    0x17d91000 (A520 0-3), 0x17d92000 (A720 4-6), 0x17d93000 (A720 7), LUT 0x100 4-byte rows, PERF_STATE 0x320
+    (+4*c with DCVS_CTRL bit 0), DOMAIN_STATE 0x20. `sweetcpufreq=gov|fixed|ro|off` (default gov; ro = log only).
+  * GPU: `bsd/dev/sweet_a810.c` + rootstockos `GpuPowerBoard.h` (as sweet_a810_board.h, unchanged) + NativeAdreno
+    `NativeAdrenoA810HwInit.h` (MIT, asteroids branch 60f16a6). `sweeta810=1..4` (default off): GCC read, cfg_ahb on,
+    CX GDSC + GPU SMMU clocks + SMMU survey, GMU pool round trip (0xE6440000+32M) and the mode-5 gate. Results
+    "SWEET A810:" in the kernel log. Next: GMU cold start (rootstockos modes 5-11), whose SMMU programming
+    (ArmSmmu4K) and generated GMU headers are not public; firmware from the phone's vendor_b
+    (research/gpu-fw-a810: sqe = rootstockos's pin, gmu/zap differ from their pins).
+  * Not done: PMIC RTC (counter is read-only for HLOS; needs an offset store), IPIs stay SGIs (our probe 2: 10/10).
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 

@@ -10,6 +10,8 @@ node /sweet-gpu before the root filesystem exists, so nothing has to be written 
   zap-mdt, zap-b00..zap-bNN        ZAPDIR/a630_zap.mdt + .bNN (signed for the phone, e.g. split from
                                    sdm845-mainline firmware-xiaomi-beryllium a630_zap.mbn with
                                    tools/zap-split.py)
+Nothing Phone (3a) (Adreno 810, xnu 2004 sweeta810): --prefix gen80300 --zap-mbn DIR/gen80300_zap.mbn, which adds
+  gmu-firmware gen80300_gmu.bin, sqe-firmware gen80300_sqe.fw, zap-mbn (the signed image as shipped; the kernel parses it)
 The firmware is Qualcomm's: keep it and the resulting ADT out of git.
 """
 import argparse
@@ -26,13 +28,17 @@ def main():
     ap.add_argument('inp'); ap.add_argument('out')
     ap.add_argument('--fw', required=True, help='directory with a630_gmu.bin and a630_sqe.fw')
     ap.add_argument('--zap', help='directory with a630_zap.mdt and a630_zap.bNN')
+    ap.add_argument('--prefix', default='a630', help='firmware file prefix (a630, or gen80300 for the Adreno 810)')
+    ap.add_argument('--zap-mbn', help='a squashed zap image (.mbn) stored whole as zap-mbn')
     a = ap.parse_args()
     root, _ = adt.parse(adt.load(a.inp))
     root.children = [c for c in root.children if c.name != 'sweet-gpu']
     n = adt.Node()
     n.props.append(('name', 0, b'sweet-gpu\0'))
-    n.props.append(('gmu-firmware', 0, open(os.path.join(a.fw, 'a630_gmu.bin'), 'rb').read()))
-    n.props.append(('sqe-firmware', 0, open(os.path.join(a.fw, 'a630_sqe.fw'), 'rb').read()))
+    n.props.append(('gmu-firmware', 0, open(os.path.join(a.fw, a.prefix + '_gmu.bin'), 'rb').read()))
+    n.props.append(('sqe-firmware', 0, open(os.path.join(a.fw, a.prefix + '_sqe.fw'), 'rb').read()))
+    if a.zap_mbn:
+        n.props.append(('zap-mbn', 0, open(a.zap_mbn, 'rb').read()))
     if a.zap:
         n.props.append(('zap-mdt', 0, open(os.path.join(a.zap, 'a630_zap.mdt'), 'rb').read()))
         for f in sorted(glob.glob(os.path.join(a.zap, 'a630_zap.b[0-9][0-9]'))):

@@ -2,7 +2,7 @@
 # Nothing Phone (3a) "asteroids": iOS 26 boot image for `fastboot boot` (nothing is flashed to boot).
 #   asteroids/build-boot.sh KERNEL NAME [BOOT-ARGS...]   -> asteroids/out/NAME.adt, NAME.payload, NAME-boot.img
 #
-# Kernel: the xnu-12377 CI artifact with xnu/patches-12377/2000-asteroids-board.patch. ADT: tools/mkadt.py
+# Kernel: the xnu-12377 CI artifact with xnu/patches-12377/2000-2004 (asteroids). ADT: tools/mkadt.py
 # --board asteroids, iPhone 11 identity (needs research/ios26/n104ap.adt for /product). Payload: tools/mkpayload.py
 # version 1 (no --compress). Loader: the asteroids shim of the ios-sweet port (Nothing's ABL drops the boot v4
 # ramdisk, so the shim carries the payload behind its own Image), ASTEROIDS_SHIM, default ../ios-sweet/asteroids/shim.
@@ -28,6 +28,12 @@ shim=${ASTEROIDS_SHIM:-$PWD/../ios-sweet/asteroids/shim}
 out=$PWD/asteroids/out
 mkdir -p "$out"
 python3 tools/mkadt.py "$out/$name.adt" --board asteroids --highmem --display-scale 2 --points 414x896 --identity n104ap
+# Adreno 810 firmware (xnu 2004, sweeta810): the phone's own gen80300_* from its vendor partition, never in git.
+# ASTEROIDS_GPU_FW=DIR (default research/gpu-fw-a810 when it exists); ASTEROIDS_GPU_FW=none leaves the ADT without it.
+gpufw=${ASTEROIDS_GPU_FW:-research/gpu-fw-a810}
+if [ "$gpufw" != none ] && [ -f "$gpufw/gen80300_gmu.bin" ]; then
+	python3 tools/adt-gpufw.py "$out/$name.adt" "$out/$name.adt" --fw "$gpufw" --prefix gen80300 --zap-mbn "$gpufw/gen80300_zap.mbn"
+fi
 python3 tools/mkpayload.py "$kernel" "$out/$name.adt" "$out/$name.payload" --cmdline "$args"
 "$shim/build.sh" "$out/$name.payload" "$out/$name-boot.img"
 echo "boot-args: $args"

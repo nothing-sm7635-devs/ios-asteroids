@@ -87,6 +87,8 @@
     after backboardd created an 828x1792 '&BGA' (0x26424741, lossless BGRA, 1 plane) surface (GradientPoster, then
     Preferences) -> launchd "critical process crashes: backboardd". 2006: SweetSurface creates '&BGA' as plain BGRA
     on asteroids. Clock: no offset file yet (fallback = build time, 2026-06-17).
+  * CI run 40576515908 SUCCESS (2000-2006, A810_LOG sync) -> research/ios26/kernel-ast5. Images ios26-ast5
+    (sweetpanel=2 sweetcpufreq=gov sweeta810=4) and ios26-ast5-gpu (sweeta810=16, for the SError hunt). ast5 booted.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

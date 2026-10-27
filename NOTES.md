@@ -146,6 +146,9 @@
     mkroot-full (root_tweaks18.chlorophyll: libs to /usr/local/lib/bgmtl, bgl-launch for backboardd's job, bgmtl-bb.arm);
     bgl-launch now accepts libchlorophyll.dylib besides libbgair.dylib. Needs a root rebuild + userdata reflash.
   * CI 49346fa (2009+2010) failed: sweet_a810_msm.c used delay() without <kern/clock.h>; fixed.
+  * CI 40589887346 (b831fb8, 2000-2010) SUCCESS -> research/ios26/kernel-ast8. The user rebuilt the root (2026-10-28,
+    presumably with RENEGADE_CHLOROPHYLL) and flashed userdata themselves. Images ios26-ast8 (sweeta810=16: GPU user client
+    published after stage 16) and ios26-ast8-nogpu (sweeta810=4: bgl-launch falls back to plain backboardd).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

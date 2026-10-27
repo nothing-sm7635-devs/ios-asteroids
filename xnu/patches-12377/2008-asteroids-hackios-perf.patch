@@ -1,0 +1,623 @@
+diff --git a/bsd/dev/sweet_dsi_asteroids.c b/bsd/dev/sweet_dsi_asteroids.c
+index 1b901bd..f7c669f 100644
+--- a/bsd/dev/sweet_dsi_asteroids.c
++++ b/bsd/dev/sweet_dsi_asteroids.c
+@@ -216,9 +216,11 @@ sweet_panel_mode(void)
+ 	/*
+ 	 * Default 2. ast3 (service without calibration): iOS 26's backboardd dereferenced NULL right after it matched the
+ 	 * service (CoreBrightness's fallback without "backlight-calibration-parameters"); SweetFramebuffer.cpp now
+-	 * publishes the calibration and the marketing table. sweetpanel=1 keeps the service off if it still crashes.
++	 * publishes the calibration and the marketing table: brightness works with it (ast4/ast5), but then backboardd
++	 * aborts (push_surface assertion, ogl-context.cpp) whenever it draws into an offscreen target: the wallpaper
++	 * poster, recents. Default 1 again (ast5-p1: no crash) until that is understood; sweetpanel=2 for the slider.
+ 	 */
+-	int mode = 2;
++	int mode = 1;
+ 	PE_parse_boot_argn("sweetpanel", &mode, sizeof(mode));
+ 	if (mode <= 0) {
+ 		printf("SWEET PANEL: off (sweetpanel=0)\n");
+diff --git a/bsd/dev/sweet_touch_asteroids.c b/bsd/dev/sweet_touch_asteroids.c
+index a69bb5d..e0843de 100644
+--- a/bsd/dev/sweet_touch_asteroids.c
++++ b/bsd/dev/sweet_touch_asteroids.c
+@@ -246,6 +246,19 @@ at_wait(unsigned ms)
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
++static void
++at_wait_us(unsigned us)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(us, NSEC_PER_USEC, &deadline);
++	(void)assert_wait_deadline(&at_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* the framebuffer's threads and this poller go to the big cores (osfmk/kern/sched_prim.c) */
++extern void sweet_amp_mark_big(thread_t thread);
++static unsigned at_active_us = 2000;    /* poll period while a finger is down (sweettouch_us), 10 ms otherwise */
++
+ static bool
+ at_wait_bits(vm_offset_t base, int32_t off, uint32_t mask, uint32_t want, unsigned us)
+ {
+@@ -408,6 +421,31 @@ at_bcm(const char *res)
+ 	return at_amc(res, at_db_lookup(res, SLAVE_BCM), off, val, 1);
+ }
+ 
++/*
++ * Memory bandwidth (HackiOS e9d2151/f5a1c07): the CPU renderer and the panel copy are bound by DDR bandwidth, and with
++ * no vote from this VM the memory controller (MC0) and the shared cache (SH0) run at whatever the other votes ask, down
++ * to their floor. Vote both to the top (x = y = 0x3fff, the largest BCM vote; RPMh takes the max of all voters). There
++ * it raised all-core write bandwidth 12.4 -> 15.4 GB/s and Settings 29 -> 37 fps. sweetbw=0: no vote.
++ */
++static void
++at_bandwidth(void)
++{
++	static const uint32_t off[1] = {0};
++	static const uint32_t val[1] = {(1u << 30) | (1u << 29) | (0x3fffu << 14) | 0x3fffu};
++	static const char *const bcms[2] = {"MC0", "SH0"};
++	int on = 1;
++	(void)PE_parse_boot_argn("sweetbw", &on, sizeof(on));
++	if (!on) {
++		printf("SWEET TOUCH: no memory bandwidth vote (sweetbw=0)\n");
++		return;
++	}
++	for (unsigned i = 0; i < 2; i++) {
++		uint32_t addr = at_db_lookup(bcms[i], SLAVE_BCM);
++		int err = addr ? at_amc(bcms[i], addr, off, val, 1) : ENOENT;
++		printf("SWEET TOUCH: bandwidth vote %s addr %#x: %s (%d)\n", bcms[i], addr, err ? "failed" : "max", err);
++	}
++}
++
+ /* ---- SMMU ---- */
+ 
+ /* Free SMR -> UFS's S2CR (CB0), S2CR before SMR as arm_smmu_write_sme(). */
+@@ -823,6 +861,7 @@ at_power(void)
+ 	if (err) {
+ 		return err;
+ 	}
++	at_bandwidth();
+ 	/* 3 GCC */
+ 	at_wr(at.gcc, GCC_VOTE, at_rd(at.gcc, GCC_VOTE) | GCC_QUP0_BITS);
+ 	if (!at_wait_bits(at.gcc, GCC_S0_CBCR, 1u << 31, 0, 10000) ||
+@@ -969,7 +1008,12 @@ at_thread(void *arg, wait_result_t result)
+ 				errors = 0;
+ 			}
+ 		}
+-		at_wait(10);
++		/* HackiOS 8c6ea92: polling every 10 ms while touched added up to 10 ms to every move; 2 ms by default now */
++		if (at.active || !(at_rd(at.tlmm, (int32_t)GPIO_IO(PIN_IRQ)) & 1u)) {
++			at_wait_us(at_active_us);
++		} else {
++			at_wait(10);
++		}
+ 	}
+ 	fts_report_mask(0, at.x, at.y);
+ out:
+@@ -1001,8 +1045,13 @@ sweet_touch_asteroids_init(void)
+ 	PE_current_console(&video);
+ 	at.panel_w = video.v_width ? (int)video.v_width : 1080;
+ 	at.panel_h = video.v_height ? (int)video.v_height : 2392;
++	(void)PE_parse_boot_argn("sweettouch_us", &at_active_us, sizeof(at_active_us));
++	if (at_active_us < 500 || at_active_us > 10000) {
++		at_active_us = 2000;
++	}
+ 	kern_return_t kr = kernel_thread_start(at_thread, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
++		sweet_amp_mark_big(thread);
+ 		thread_deallocate(thread);
+ 	} else {
+ 		printf("SWEET TOUCH: kernel_thread_start failed %d\n", kr);
+diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
+index 6f8a417..a53f73f 100644
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -3222,6 +3222,26 @@ memstat_increased_limit(int32_t limit, int32_t increase)
+ }
+ #endif /* DEVELOPMENT || DEBUG */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include "../dev/sweet_board.h"
++/*
++ * asteroids: daemons cross their launchd JetsamProperties limits here (usernotificationsd, gamepolicyd, nehelper:
++ * 6-8 MB InactiveHard, then SIGKILL; dozens of relaunches per boot, logs/ast5-recents) although they fit on an
++ * iPhone 11. Limits below 64 MB are multiplied by sweetmemlimit_x (default 4 on asteroids, 1 = stock).
++ */
++static int32_t
++sweet_memlimit_scale(int32_t limit)
++{
++	static int factor = -1;
++	if (factor < 0) {
++		int x = sweet_board_asteroids() ? 4 : 1;
++		PE_parse_boot_argn("sweetmemlimit_x", &x, sizeof(x));
++		factor = (x >= 1 && x <= 16) ? x : 1;
++	}
++	return (limit > 0 && limit < 64) ? limit * factor : limit;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ static int
+ memstat_set_memlimits_locked(proc_t p, int32_t active_limit,
+     int32_t inactive_limit, memlimit_options_t options)
+@@ -3270,6 +3290,11 @@ memstat_set_memlimits_locked(proc_t p, int32_t active_limit,
+ 		options |= MEMLIMIT_INACTIVE_FATAL;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	active_limit = sweet_memlimit_scale(active_limit);
++	inactive_limit = sweet_memlimit_scale(inactive_limit);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 	memorystatus_log_debug(
+ 		"memorystatus: setting memlimit for %s [%d], "
+ 		"Active(%dMB %s), Inactive(%dMB, %s)\n",
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 58b5e67..76a8b9b 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -68,6 +68,8 @@ extern "C" int sweet_panel_mode(void);
+ extern "C" void sweet_panel_post_level(uint32_t level);
+ extern "C" void sweet_panel_post_power(bool on);
+ static void sweet_backlight_calibration(IOService *bl, uint32_t peak);  /* below: what CoreBrightness needs */
++extern "C" void sweet_amp_mark_big(struct thread *thread);    /* osfmk/kern/sched_prim.c: prefer the big cores */
++static void sweet_rows_start(void);     /* below: the scaled copy's helper threads */
+ extern "C" void sweet_fb_stats_publish(const char *text);       /* bsd/dev/sweet_fb.c: sysctl kern.sweet_fb */
+ extern "C" int sweet_fb_hud;
+ extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
+@@ -151,6 +153,7 @@ static uint64_t sweet_abs_us(uint64_t abs);
+ #include <IOKit/system.h>
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
++#include <kern/thread.h>
+ #include <sys/proc.h>
+ #include <sys/errno.h>
+ 
+@@ -667,6 +670,13 @@ AppleCLCD::start(IOService *provider)
+ 	}
+ 	fDraw = fPixels;
+ 	fDrawIdx = 0;
++	/* the vsync tick, present() and the panel copy run on this work loop: on the big cores (sweet_amp_mark_big) */
++	if (fWorkLoop->getThread() != NULL) {
++		sweet_amp_mark_big(fWorkLoop->getThread());
++	}
++	if (fScale != 0) {
++		sweet_rows_start();
++	}
+ 	fPipe = -1;
+ 	fSmmuA = fSmmuB = -2;
+ 	fZcCleanMode = 1;
+@@ -837,7 +847,7 @@ AppleCLCD::start(IOService *provider)
+ 	} else if (sweet_board_asteroids()) {
+ 		/*
+ 		 * Nothing Phone (3a): the AMOLED panel takes DCS commands through DSI0 (bsd/dev/sweet_dsi_asteroids.c, after
+-		 * rootstockos T37). sweetpanel=1: display off/on follows iOS's power state; 2 (default): also the
++		 * rootstockos T37). sweetpanel=1 (default): display off/on follows iOS's power state; 2: also the
+ 		 * AppleARMBacklight brightness service (0..4095, the panel's own DBV scale).
+ 		 */
+ 		int mode = sweet_panel_mode();
+@@ -3286,6 +3296,124 @@ AppleCLCD::presentCanvas(SweetSurface *s, uintptr_t src, int32_t sx, int32_t sy,
+ 	}
+ }
+ 
++/*
++ * The scaled copy split across cores (idea from HackiOS 8c6ea92, fb_threads): the presenter takes the first band of
++ * panel rows and sweetfb_threads-1 helper threads (default 3 in all, on the big cores, see sweet_amp_mark_big) take the
++ * others. A full 1080x2392 frame is ~10 MB of stores into the write-combined panel, one core does it in ~10 ms on an
++ * A720 and far longer on an A520. Small rects (cursor-sized updates) stay on the presenter.
++ */
++struct sweet_rows_job {
++	const uint8_t *base;
++	uintptr_t draw;
++	const uint32_t *xmap;
++	uint32_t bpr, rowBytes;
++	int32_t padY;
++	uint32_t scaleYNum, scaleYDen;
++	int32_t sy, dy, h, px0, n;
++};
++
++#define SWEET_ROWS_MAX_THREADS  4
++#define SWEET_ROWS_MIN_PIXELS   (256 * 1024)    /* below this one core is faster than waking helpers */
++
++
++static struct {
++	IOLock *lock;
++	unsigned helpers;               /* threads besides the presenter */
++	uint64_t gen;                   /* bumped per job; helpers wait for a new one */
++	unsigned pending;               /* helpers still drawing */
++	struct sweet_rows_job job;
++	int32_t band[SWEET_ROWS_MAX_THREADS + 1];
++} sweet_rows;
++
++static void
++sweet_rows_draw(const struct sweet_rows_job *j, int32_t from, int32_t to)
++{
++	for (int32_t py = from; py < to; py++) {
++		int32_t ly = (int32_t)((uint64_t)(py - j->padY) * j->scaleYDen / j->scaleYNum) - j->dy;
++		ly = ly < 0 ? 0 : (ly >= j->h ? j->h - 1 : ly);
++		const uint32_t *srow = (const uint32_t *)(j->base + (uint64_t)(j->sy + ly) * j->bpr);
++		/* not volatile: the panel mapping is write-combined, so the compiler may pair the stores */
++		uint32_t *drow = (uint32_t *)(j->draw + (uint64_t)py * j->rowBytes) + j->px0;
++		for (int32_t i = 0; i < j->n; i++) {
++			drow[i] = srow[j->xmap[i]];
++		}
++	}
++}
++
++static void
++sweet_rows_helper(void *arg, wait_result_t wr)
++{
++	unsigned index = (unsigned)(uintptr_t)arg;
++	uint64_t seen = 0;
++	(void)wr;
++
++	thread_set_thread_name(current_thread(), "sweetfb-rows");
++	for (;;) {
++		IOLockLock(sweet_rows.lock);
++		while (sweet_rows.gen == seen) {
++			IOLockSleep(sweet_rows.lock, &sweet_rows.gen, THREAD_UNINT);
++		}
++		seen = sweet_rows.gen;
++		struct sweet_rows_job job = sweet_rows.job;
++		int32_t from = sweet_rows.band[index], to = sweet_rows.band[index + 1];
++		IOLockUnlock(sweet_rows.lock);
++		sweet_rows_draw(&job, from, to);
++		IOLockLock(sweet_rows.lock);
++		if (--sweet_rows.pending == 0) {
++			IOLockWakeup(sweet_rows.lock, &sweet_rows.pending, false);
++		}
++		IOLockUnlock(sweet_rows.lock);
++	}
++}
++
++static void
++sweet_rows_start(void)
++{
++	unsigned threads = 3;
++	PE_parse_boot_argn("sweetfb_threads", &threads, sizeof(threads));
++	if (threads > SWEET_ROWS_MAX_THREADS) {
++		threads = SWEET_ROWS_MAX_THREADS;
++	}
++	if (threads <= 1 || (sweet_rows.lock = IOLockAlloc()) == NULL) {
++		return;
++	}
++	for (unsigned i = 1; i < threads; i++) {
++		thread_t thread;
++		if (kernel_thread_start(sweet_rows_helper, (void *)(uintptr_t)i, &thread) != KERN_SUCCESS) {
++			break;
++		}
++		sweet_amp_mark_big(thread);
++		thread_deallocate(thread);
++		sweet_rows.helpers++;
++	}
++	IOLog("SWEET FB: scaled copy on %u threads (sweetfb_threads)\n", sweet_rows.helpers + 1);
++}
++
++static void
++sweet_rows_run(const struct sweet_rows_job *j, int32_t py0, int32_t py1)
++{
++	unsigned parts = sweet_rows.helpers + 1;
++	if (parts == 1 || (int64_t)(py1 - py0) * j->n < SWEET_ROWS_MIN_PIXELS) {
++		sweet_rows_draw(j, py0, py1);
++		return;
++	}
++	IOLockLock(sweet_rows.lock);
++	sweet_rows.job = *j;
++	for (unsigned i = 0; i <= parts; i++) {
++		sweet_rows.band[i] = py0 + (int32_t)((int64_t)(py1 - py0) * i / parts);
++	}
++	sweet_rows.pending = sweet_rows.helpers;
++	sweet_rows.gen++;
++	IOLockWakeup(sweet_rows.lock, &sweet_rows.gen, false);
++	IOLockUnlock(sweet_rows.lock);
++	sweet_rows_draw(j, sweet_rows.band[0], sweet_rows.band[1]);
++	IOLockLock(sweet_rows.lock);
++	while (sweet_rows.pending != 0) {
++		IOLockSleep(sweet_rows.lock, &sweet_rows.pending, THREAD_UNINT);
++	}
++	IOLockUnlock(sweet_rows.lock);
++}
++
+ /*
+  * One layer, logical rect (dx,dy,w,h) from surface origin (sx,sy), scaled
+  * into the panel with nearest-neighbour sampling: every panel pixel picks
+@@ -3343,17 +3471,12 @@ AppleCLCD::presentScaled(SweetSurface *s, uintptr_t src, int32_t sx, int32_t sy,
+ 		lx = lx < 0 ? 0 : (lx >= w ? w - 1 : lx);
+ 		fXMap[px - px0] = (uint32_t)(sx + lx);
+ 	}
+-	const uint8_t *base = (const uint8_t *)(src + s->offset);
+-	for (int32_t py = py0; py < py1; py++) {
+-		int32_t ly = (int32_t)((uint64_t)(py - fPadY) * fScaleYDen / fScaleYNum) - dy;
+-		ly = ly < 0 ? 0 : (ly >= h ? h - 1 : ly);
+-		const uint32_t *srow = (const uint32_t *)(base + (uint64_t)(sy + ly) * s->bytesPerRow);
+-		volatile uint32_t *drow = (volatile uint32_t *)(fDraw + (uint64_t)py * fRowBytes) + px0;
+-		int32_t n = px1 - px0;
+-		for (int32_t i = 0; i < n; i++) {
+-			drow[i] = srow[fXMap[i]];
+-		}
+-	}
++	struct sweet_rows_job job = {
++		.base = (const uint8_t *)(src + s->offset), .draw = fDraw, .xmap = fXMap, .bpr = s->bytesPerRow,
++		.rowBytes = fRowBytes, .padY = fPadY, .scaleYNum = fScaleYNum, .scaleYDen = fScaleYDen, .sy = sy, .dy = dy,
++		.h = h, .px0 = px0, .n = px1 - px0,
++	};
++	sweet_rows_run(&job, py0, py1);
+ }
+ 
+ void
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index c1b78ef..5fa92ee 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -46,6 +46,7 @@
+ #include <libkern/c++/OSString.h>
+ #include <sys/proc.h>
+ #include <kern/clock.h>
++#include <kern/thread_call.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include "../../../bsd/dev/sweet_board.h"
+@@ -364,6 +365,139 @@ sweet_lowpool_free(uint64_t pa, uint32_t np)
+ 	IOLockUnlock(sweet_surface_lock);
+ }
+ 
++/*
++ * Full-screen buffers kept for reuse (HackiOS e9d2151): the window server makes and drops screen-sized surfaces all the
++ * time, and each create was a fresh 6 MB wired allocation plus a bzero (2.6-4 ms there), each free a 2 ms unwire. Up
++ * to SWEET_SURF_CACHE freed buffers of SWEET_SURF_CACHE_MIN bytes or more are kept; a thread call zeroes them off the
++ * caller's path (a reused buffer must never show the previous owner's pixels); a create of the same size takes a zeroed
++ * one. Oldest evicted. sweetsurf_cache=0 turns it off.
++ */
++#define SWEET_SURF_CACHE        4
++#define SWEET_SURF_CACHE_MIN    (4u << 20)
++
++static struct {
++	IOBufferMemoryDescriptor *mem;
++	uint32_t size;
++	uint8_t state;                  /* 0 dirty, 1 being zeroed, 2 zeroed */
++	uint64_t stamp;
++} sweet_surf_cache[SWEET_SURF_CACHE];
++static IOLock *sweet_surf_cache_lock;
++static thread_call_t sweet_surf_cache_call;
++static uint64_t sweet_surf_cache_seq, sweet_surf_cache_hits, sweet_surf_cache_puts;
++static int sweet_surf_cache_on = -1;
++
++static void
++sweet_surf_cache_zero(thread_call_param_t, thread_call_param_t)
++{
++	for (;;) {
++		IOBufferMemoryDescriptor *mem = NULL;
++		unsigned slot = 0;
++		IOLockLock(sweet_surf_cache_lock);
++		for (unsigned i = 0; i < SWEET_SURF_CACHE; i++) {
++			if (sweet_surf_cache[i].mem != NULL && sweet_surf_cache[i].state == 0) {
++				sweet_surf_cache[i].state = 1;
++				mem = sweet_surf_cache[i].mem;
++				slot = i;
++				break;
++			}
++		}
++		IOLockUnlock(sweet_surf_cache_lock);
++		if (mem == NULL) {
++			return;
++		}
++		bzero(mem->getBytesNoCopy(), sweet_surf_cache[slot].size);
++		IOLockLock(sweet_surf_cache_lock);
++		sweet_surf_cache[slot].state = 2;       /* the slot is only emptied by take/put, which skip state 1 */
++		IOLockUnlock(sweet_surf_cache_lock);
++	}
++}
++
++static bool
++sweet_surf_cache_enabled(void)
++{
++	if (sweet_surf_cache_on < 0) {
++		int on = sweet_board_asteroids() ? 1 : 0;
++		PE_parse_boot_argn("sweetsurf_cache", &on, sizeof(on));
++		IOLock *lock = on ? IOLockAlloc() : NULL;
++		thread_call_t call = on ? thread_call_allocate_with_options(sweet_surf_cache_zero, NULL,
++		    THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE) : NULL;
++		if (on && (lock == NULL || call == NULL)) {
++			on = 0;
++		}
++		if (!on || !OSCompareAndSwapPtr(NULL, lock, &sweet_surf_cache_lock)) {
++			if (lock != NULL) {
++				IOLockFree(lock);
++			}
++			if (call != NULL) {
++				thread_call_free(call);
++			}
++		} else {
++			sweet_surf_cache_call = call;
++		}
++		sweet_surf_cache_on = (on && sweet_surf_cache_lock != NULL && sweet_surf_cache_call != NULL) ? 1 : 0;
++	}
++	return sweet_surf_cache_on == 1;
++}
++
++/* A zeroed buffer of exactly this size, or NULL. */
++static IOBufferMemoryDescriptor *
++sweet_surf_cache_take(uint32_t size)
++{
++	IOBufferMemoryDescriptor *mem = NULL;
++	if (size < SWEET_SURF_CACHE_MIN || !sweet_surf_cache_enabled()) {
++		return NULL;
++	}
++	IOLockLock(sweet_surf_cache_lock);
++	for (unsigned i = 0; i < SWEET_SURF_CACHE; i++) {
++		if (sweet_surf_cache[i].mem != NULL && sweet_surf_cache[i].state == 2 && sweet_surf_cache[i].size == size) {
++			mem = sweet_surf_cache[i].mem;
++			sweet_surf_cache[i].mem = NULL;
++			sweet_surf_cache_hits++;
++			break;
++		}
++	}
++	IOLockUnlock(sweet_surf_cache_lock);
++	return mem;
++}
++
++/* Keeps mem (the caller's reference passes to the cache); false: not kept, the caller releases it. */
++static bool
++sweet_surf_cache_put(IOBufferMemoryDescriptor *mem, uint32_t size)
++{
++	IOBufferMemoryDescriptor *evict = NULL;
++	if (size < SWEET_SURF_CACHE_MIN || !sweet_surf_cache_enabled()) {
++		return false;
++	}
++	IOLockLock(sweet_surf_cache_lock);
++	int slot = -1;
++	for (unsigned i = 0; i < SWEET_SURF_CACHE; i++) {
++		if (sweet_surf_cache[i].mem == NULL) {
++			slot = (int)i;
++			break;
++		}
++		if (sweet_surf_cache[i].state != 1 && (slot < 0 || sweet_surf_cache[i].stamp < sweet_surf_cache[slot].stamp)) {
++			slot = (int)i;
++		}
++	}
++	if (slot >= 0) {
++		evict = sweet_surf_cache[slot].mem;
++		sweet_surf_cache[slot].mem = mem;
++		sweet_surf_cache[slot].size = size;
++		sweet_surf_cache[slot].state = 0;
++		sweet_surf_cache[slot].stamp = ++sweet_surf_cache_seq;
++		if ((++sweet_surf_cache_puts & 1023) == 1) {
++			IOLog("SWEET SURF: buffer cache: %llu kept, %llu reused\n", sweet_surf_cache_puts, sweet_surf_cache_hits);
++		}
++	}
++	IOLockUnlock(sweet_surf_cache_lock);
++	if (slot < 0) {
++		return false;
++	}
++	OSSafeReleaseNULL(evict);
++	thread_call_enter(sweet_surf_cache_call);
++	return true;
++}
++
+ void
+ SweetSurface::free()
+ {
+@@ -375,6 +509,10 @@ SweetSurface::free()
+ 	if (wrapped && memory != NULL) {
+ 		memory->complete();
+ 	}
++	IOBufferMemoryDescriptor *buffer = wrapped ? NULL : OSDynamicCast(IOBufferMemoryDescriptor, memory);
++	if (buffer != NULL && sweet_surf_cache_put(buffer, allocSize)) {
++		memory = NULL;
++	}
+ 	OSSafeReleaseNULL(memory);
+ 	OSSafeReleaseNULL(state);
+ 	if (pooled) {
+@@ -687,14 +825,33 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 	 * "found != slist->end()" in push_surface (ogl-context.cpp), backboardd SIGABRT, three times -> launchd reboots
+ 	 * (boot ast4-gpu4). There is no compression here, so the surface is plain BGRA with the same rows.
+ 	 */
+-	const bool lossless = s->pixelFormat == SWEET_FORMAT_BGRA_LOSSLESS && sweet_board_asteroids();
+-	if (lossless) {
+-		static bool logged;
+-		if (!logged) {
+-			logged = true;
+-			IOLog("SWEET SURF: '&BGA' (lossless BGRA) surfaces are created as plain BGRA\n");
++	/*
++	 * The same for the 4-byte 10-bit formats (HackiOS f12b369/47c8bd9): the CPU renderer refuses w30r as a destination
++	 * ("SW renderer invalid destination format") and transitions came out black. n104ap is a wide-colour (P3) display,
++	 * so iOS asks for them; as BGRA they are drawn 8-bit.
++	 */
++	static const struct {
++		uint32_t format;
++		const char *name;
++	} sweet_as_bgra[] = {
++		{ SWEET_FORMAT_BGRA_LOSSLESS, "&BGA" }, { 0x77333072, "w30r" }, { 0x6c313072, "l10r" },
++		{ 0x77333052, "w30R" }, { 0x62336138, "b3a8" },
++	};
++	static uint32_t sweet_as_bgra_logged;
++	bool lossless = false;
++	if (sweet_board_asteroids() && s->bytesPerElement == 4) {
++		for (unsigned i = 0; i < sizeof(sweet_as_bgra) / sizeof(sweet_as_bgra[0]); i++) {
++			if (s->pixelFormat != sweet_as_bgra[i].format) {
++				continue;
++			}
++			if (!(sweet_as_bgra_logged & (1u << i))) {
++				sweet_as_bgra_logged |= 1u << i;
++				IOLog("SWEET SURF: '%s' surfaces are created as plain BGRA\n", sweet_as_bgra[i].name);
++			}
++			s->pixelFormat = SWEET_FORMAT_BGRA;
++			lossless = true;        /* one plane, the plane info is ignored */
++			break;
+ 		}
+-		s->pixelFormat = SWEET_FORMAT_BGRA;
+ 	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+@@ -1153,16 +1310,23 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 	}
+ 	if (ret == kIOReturnSuccess && s->memory == NULL) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
++		bool reused = false;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+-			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++			mem = sweet_surf_cache_take(s->allocSize);
++			reused = mem != NULL;
++			if (mem == NULL) {
++				mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++				    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++			}
+ 		}
+ 		if (mem == NULL) {
+ 			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+-			bzero(mem->getBytesNoCopy(), s->allocSize);
++			if (!reused) {
++				bzero(mem->getBytesNoCopy(), s->allocSize);
++			}
+ 			s->memory = mem;
+ 			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 47ccef6..4e1d1ed 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -4702,6 +4702,25 @@ sweet_amp_enable(uint64_t big, uint64_t little, int pri)
+ 	os_atomic_store(&sweet_amp_big_mask, big, release);
+ }
+ 
++/*
++ * Kernel threads that must run on the big cores although kernel_task's go to the little ones: the framebuffer's work
++ * loop and its copy helpers, the touch poller (HackiOS ca1640d measured the panel copy at 15 ms on a little core, 4 ms
++ * on a big one). Set once at start, never cleared.
++ */
++#define SWEET_AMP_BIG_THREADS 8
++static thread_t _Atomic sweet_amp_big_threads[SWEET_AMP_BIG_THREADS];
++
++void sweet_amp_mark_big(thread_t thread);
++void
++sweet_amp_mark_big(thread_t thread)
++{
++	for (int i = 0; i < SWEET_AMP_BIG_THREADS; i++) {
++		if (os_atomic_cmpxchg(&sweet_amp_big_threads[i], THREAD_NULL, thread, release)) {
++			return;
++		}
++	}
++}
++
+ /* CPUs the thread should use first, 0 if the steering is off. */
+ static inline uint64_t
+ sweet_amp_wanted_map(thread_t thread)
+@@ -4713,6 +4732,15 @@ sweet_amp_wanted_map(thread_t thread)
+ 	if (thread->base_pri >= sweet_amp_pri && get_threadtask(thread) != kernel_task) {
+ 		return big;
+ 	}
++	for (int i = 0; i < SWEET_AMP_BIG_THREADS; i++) {
++		thread_t t = os_atomic_load(&sweet_amp_big_threads[i], relaxed);
++		if (t == THREAD_NULL) {
++			break;
++		}
++		if (t == thread) {
++			return big;
++		}
++	}
+ 	return os_atomic_load(&sweet_amp_little_mask, relaxed);
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

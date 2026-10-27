@@ -588,6 +588,9 @@ QUIET_THROTTLE = {      # label -> ThrottleInterval seconds (default 10, replica
     'com.apple.icloud.findmydeviced': 60, 'com.apple.mobileactivationd': 60,
     'com.apple.spaceattributiond': 60, 'com.apple.fairplayd.H2': 60, 'com.apple.PerfPowerServices': 60,
     'com.apple.webinspectord': 60,
+    # crash-loop without a GPU, models or cellular (HackiOS 7d2147b, ce7170a and its boot logs): slowed, not removed
+    'com.apple.photoanalysisd': 300, 'com.apple.homed': 60, 'com.apple.routined': 60, 'com.apple.duetexpertd': 60,
+    'com.apple.dmd': 60, 'com.apple.syncdefaultsd': 60, 'com.apple.avconferenced': 60, 'com.apple.bird': 60,
 }
 QUIET_REMOVE = ('com.apple.security.cryptexd',)     # libimage4 panics 'failed to get manifest properties' (no ADT /chosen/manifest-properties); fixed by tools/mkpayload.py add_img4_nodes (rebuild the boot image), so removing the job is no longer needed
 

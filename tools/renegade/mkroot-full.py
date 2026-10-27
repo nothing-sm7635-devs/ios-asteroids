@@ -430,9 +430,13 @@ def stage_tweaks(a, root):
         rt.audio(root)
         rt.merge_pref(root, 'com.apple.migration', {
             'LastSystemVersion': rt.BUILD, 'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': rt.BUILD}})
+        # FBLaunchWatchdogScale: launch watchdogs x20 (a CPU-rendered first frame is slow); BSUIVibrancyEffectViewDisabled:
+        # vibrancy drawn by the CPU renderer came out red (lock screen clock digits). Both from HackiOS (ed87444, eagl).
         rt.merge_pref(root, 'com.apple.springboard', {
             'BKNoWatchdogs': True, 'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
+            'FBLaunchWatchdogScale': 20, 'BSUIVibrancyEffectViewDisabled': True,
             'MCForceShowCloudConfigurationUI': False, 'SBShowBatteryPercentage': True})
+        rt.merge_pref(root, 'com.apple.frontboard', {'FBLaunchWatchdogScale': 20})
         rt.sweetprefs_tool(root)
         rt.merge_pref(root, 'com.apple.purplebuddy', {
             'SetupDone': True, 'SetupFinishedAllSteps': True, 'SetupVersion': 11, 'daemonizeNeedsToRun': False})

@@ -105,6 +105,16 @@
     sweetpanel=1 sweetamp=0 sweetcpufreq_little_max=100 sweetfb_vsync=1. Candidates: multi-thread presentScaled,
     surface buffer reuse, MC0/SH0 bandwidth vote, 1 ms touch poll while touched, w30r/l10r/w30R/b3a8 -> BGRA,
     snapshot JPEG instead of ASTC, SpringBoard BKNoWatchdogs/FBLaunchWatchdogScale, BSUIVibrancyEffectViewDisabled.
+  * 2008 (HackiOS fixes ported, user: "do all of those fixes together"; NOT built/booted yet): sweet_amp_mark_big()
+    (sched_prim.c) puts the framebuffer work loop, its row helpers and the touch poller on the A720s; presentScaled
+    split over sweetfb_threads (default 3) bands, non-volatile stores; full-screen IOSurface buffers (>= 4 MB) kept
+    for reuse, zeroed by a thread call (sweetsurf_cache=0 off); MC0/SH0 BCM vote to the max from the touch RPMh path
+    (sweetbw=0 off); touch poll 2 ms while touched (sweettouch_us); w30r/l10r/w30R/b3a8 created as BGRA; jetsam
+    limits < 64 MB x4 on asteroids (sweetmemlimit_x; usernotificationsd/gamepolicyd/nehelper were killed at 6-8 MB
+    dozens of times per boot); sweetpanel default 1. Renegade (needs a root rebuild + reflash, not done): SpringBoard
+    FBLaunchWatchdogScale 20 + BSUIVibrancyEffectViewDisabled, frontboard FBLaunchWatchdogScale 20, QUIET_THROTTLE for
+    photoanalysisd/homed/routined/duetexpertd/dmd/syncdefaultsd/avconferenced/bird (SWEET_QUIET=1). Not done: snapshot
+    JPEG hook (an arm64e dylib, Mac build), mediaserverd prewarm (no mediaserverd crash in our logs).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

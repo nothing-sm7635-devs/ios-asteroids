@@ -2,7 +2,7 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium] [--display-scale 3|2] [--points WxH] [--lowpool BASE:SIZE]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|beryllium|asteroids] [--display-scale 3|2] [--points WxH] [--lowpool BASE:SIZE]
 """
 import hashlib, os, struct, sys
 
@@ -70,6 +70,21 @@ BOARDS = {
         # /arm-io/bluetooth for bluetoothd/BlueTool (docs/BT_IOS_TRANSPORT.md 3.2). Sweet has no
         # Bluetooth driver: the node is beryllium only.
         bluetooth=True),
+    # Nothing Phone (3a) "asteroids", SM7635 under Qualcomm's Gunyah hypervisor (values from the ios-sweet
+    # asteroids port: live FDT, bare-metal probes 1-3; asteroids/NOTES.md there). Booted by the asteroids shim
+    # (fastboot boot, payload behind the shim's Image), not by Enxerto.
+    'asteroids': dict(
+        fb=(0xe3940000, 0x2b00000), fb_wh=(1080, 2392),            # splash_region, MDSS SSPP0, stride 4320
+        compat=['nothing,asteroids', 'xiaomi,sweet', 'qcom,sm7635'],
+        # 0-3 Cortex-A520, 4-7 Cortex-A720 (live FDT capacity-dmips-mhz)
+        cpu_compat='qcom,kryo-sm7635', big_from=4, freqs=(1800000000, 2400000000),
+        # Kernel RAM: the contiguous DDR range 0x8bf800000-0x9ffffffff of the FDT memory node,
+        # without a fixed carve-out; the top 192 MB stay free. Used with and without --highmem.
+        mem=(0x8c0000000, 0x134000000), highmem_mem=(0x8c0000000, 0x134000000),
+        gicd=0x17100000, gicr=0x17180000, gicr_size=0x200000,
+        gicr_stride=0x40000,    # Gunyah vGIC: GICv4 frames (RD, SGI, VLPI, reserved) without GICR_TYPER.VLPIS
+        vtimer_intid=27,        # <GIC_PPI 11 ...>: Gunyah gives the EL1 guest the virtual timer
+        ecid=0x4153545200000001),   # 'ASTR' + 1, synthetic
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -161,6 +176,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
     if board != 'sweet' and not qemu:
         if not highmem:
             phys_base, mem_size = b['mem']
+        elif 'highmem_mem' in b:
+            phys_base, mem_size = b['highmem_mem']
     fb, fb_size = b['fb']
     fb_w, fb_h = b['fb_wh']
     if lowpool is not None:
@@ -171,7 +188,9 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
             raise SystemExit(f'--lowpool {lp_base:#x}:{lp_size:#x}: must be 16K aligned inside {LOWPOOL_MIN:#x}..{LOWPOOL_MAX:#x}')
         if lp_base < phys_base + mem_size and phys_base < lp_base + lp_size:
             raise SystemExit(f'--lowpool {lp_base:#x}:{lp_size:#x} overlaps the kernel RAM {phys_base:#x}+{mem_size:#x}')
-    gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
+    gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (b.get('gicd', GICD), b.get('gicr', GICR), TIMEBASE)
+    gicr_size = GICR_SIZE if qemu else b.get('gicr_size', GICR_SIZE)
+    vtimer = QEMU_VTIMER_INTID if qemu else b.get('vtimer_intid', VTIMER_INTID)
     # 256 bytes: xnu-12377 asks the bootloader for 4 * SHA-512 (prng_random.c, panics "Expected 256 seed bytes from
     # bootloader, but got 64"); older kernels copy only the 64 they ask for (PE_get_random_seed clamps)
     seed = seed if seed is not None else os.urandom(256)
@@ -206,7 +225,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
         # files), so e.g. DataMigration never records LastSystemVersion and
         # migrates on every boot. Synthetic ECID (not the phone's); chip-id
         # of the A11 that the iPhone X userland expects.
-        ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
+        ('unique-chip-id', struct.pack('<Q', b.get('ecid', SWEET_ECID))),
         ('chip-id', u32(0x8015)),
         # Security status as on a dev-fused, undemoted board (tuple 0,0,1,1):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
@@ -258,9 +277,9 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', display_scale=3, 
         ph(),
         ('compatible', cstr('arm,gic-v3')),
         ('interrupt-controller', b''),
-        ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
-        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
-    ])
+        ('virtual-timer-intid', u32(vtimer)),
+        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, gicr_size)),
+    ] + ([('redistributor-stride', u32(b['gicr_stride']))] if 'gicr_stride' in b and not qemu else []))
     arm_io = node('arm-io', [
         ph(),
         ('device_type', cstr('sweet-io')),

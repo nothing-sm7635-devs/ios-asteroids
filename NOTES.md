@@ -2,6 +2,21 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 2026-10-27: branch `asteroids` (Nothing Phone (3a), SM7635 under Gunyah), iOS 26 port, NOT built or booted <<<
+* Local branch off develop 37a7a7a. Kernel: `xnu/patches-12377/2000-asteroids-board.patch` (applies on the full
+  12377 stack, checked locally with `git apply`; not compiled: needs the macOS CI):
+  `sweet_board_asteroids()` ("nothing,asteroids" in the ADT root compatible); sweet_ufs_init starts none of the
+  SM7150/SDM845 drivers there (keys, touch, USB, charger, cpufreq, reboot, A630, Wi-Fi); SweetBattery never polls
+  SPMI there (v5 addresses; asteroids has arbiter v7); GIC redistributor stride from ADT `redistributor-stride`
+  (Gunyah: 0x40000 without GICR_TYPER.VLPIS); start.s stage-0 band, start.s/arm_vm_init 32MB framebuffer block and
+  sweet_early from boot_args Video (0x9c000000 is a firmware carve-out on asteroids; fb 0xe3940000 1080x2392).
+* `tools/mkadt.py --board asteroids` (RAM 0x8c0000000+0x134000000, GIC 0x17100000/0x17180000+0x200000, vtimer
+  27, fb, ECID 'ASTR'+1; UFS 0x1d84000 as sweet). `asteroids/build-boot.sh KERNEL NAME`: ADT (n104ap, 414x896 @2x)
+  + mkpayload v1 + the ios-sweet asteroids shim (`fastboot boot`; nothing flashed to boot), Poco F1 hardware
+  boot-args removed. Facts and history of the phone: ios-sweet `asteroids/NOTES.md`.
+* Next: CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
+  `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
+
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
 * Wi-Fi `claude/wlan26-chip-037a03` was already develop (f4b36c1, boot 54 WPA2 join). Merged `claude/peaceful-saha-28595a` (xnu-12377 1019 PAC emulation, tools/pacemu) and `claude/chlorophyll-turnip-c432e2` (freedreno-sweet syncobjs + prime fds, sweetgpu, notes; NOTES conflict: both sections kept below).
 * Chlorophyll: `ios26` fast-forwarded to `turnip` d3cb665 (Turnip runtime, Mesa 26.2.5, guard-page slack); `gpu/metal` gitlink dbfcd6d -> d3cb665. The Turnip session's boot 54-55 notes (SpringBoard SMMU faults, guard-page fix) are not yet in NOTES on this branch. Nothing pushed (develop and Chlorophyll ios26 are local).

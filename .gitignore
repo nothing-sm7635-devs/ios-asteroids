@@ -12,3 +12,4 @@ xnu/out/
 xnu/out-*/
 __pycache__/
 tools/identity/out/
+asteroids/out/

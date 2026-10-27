@@ -1,0 +1,260 @@
+diff --git a/bsd/dev/sweet_board.h b/bsd/dev/sweet_board.h
+index 3d9c06a..3adf741 100644
+--- a/bsd/dev/sweet_board.h
++++ b/bsd/dev/sweet_board.h
+@@ -3,6 +3,8 @@
+  * (tools/mkadt.py --board) names the board; everything else is common.
+  *   xiaomi,sweet      Redmi Note 10 Pro, SM7150 (default)
+  *   xiaomi,beryllium  Poco F1, SDM845
++ *   nothing,asteroids Nothing Phone (3a), SM7635 under Qualcomm's Gunyah hypervisor:
++ *                     none of the SM7150/SDM845 drivers (fixed MMIO) may run there
+  */
+ #ifndef _SWEET_BOARD_H_
+ #define _SWEET_BOARD_H_
+@@ -76,4 +78,14 @@ sweet_board_beryllium(void)
+ 	return cached == 1;
+ }
+ 
++static inline bool
++sweet_board_asteroids(void)
++{
++	static int cached = -1;
++	if (cached < 0) {
++		cached = sweet_board_is("nothing,asteroids") ? 1 : 0;
++	}
++	return cached == 1;
++}
++
+ #endif /* _SWEET_BOARD_H_ */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index a627530..2e2239f 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1148,6 +1148,14 @@ sweet_ufs_init(void)
+ 	sweet_ufs_syncer_start();
+ 	sweet_ufs_selftest_start();
+ 	sweet_sample_start();
++	/*
++	 * The drivers below drive SM7150/SDM845 blocks at fixed physical addresses (SPMI, GENI,
++	 * GCC, TLMM, RPMh, DWC3, the A630, the WCN3990): never on another SoC.
++	 */
++	if (sweet_board_asteroids()) {
++		printf("SWEET UFS: Nothing Phone (3a): no SM7150/SDM845 drivers (keys, touch, USB, charger, GPU, Wi-Fi)\n");
++		return 0;
++	}
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_cpufreq_max();
+ 	sweet_charger_start();
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 56b6f9c..f1adeaa 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -409,7 +409,8 @@ SweetBattery::start(IOService *provider)
+ 	}
+ 	int real = 0;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+-	fReal = real == 1 && sweet_spmi_init() == 0;
++	/* sweet_spmi.c is the SM7150/SDM845 arbiter (v5): not the Nothing Phone (3a)'s (v7) */
++	fReal = real == 1 && !sweet_board_asteroids() && sweet_spmi_init() == 0;
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 9e8f61d..4f2c98c 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1838,7 +1838,8 @@ sweet_early_map_final(void)
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+ 	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	/* the block start.s mapped V=P: the one holding the boot_args framebuffer */
++	*slot = sweet_early_fb_block() | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 2a8e5a0..5910399 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -525,11 +525,31 @@ LEXT(start_first_cpu)
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	/*
++	 * Stage 0: white 64x32 band, no stack or page tables needed, near the
++	 * bottom of the boot_args framebuffer, clipped to the 32MB block that
++	 * holds its start (sweet_early.c uses the same block). boot_args (x20,
++	 * physical): Video.v_baseAddr at 40, v_rowBytes at 56, v_height at 72.
++	 * Asteroids: a fixed 0x9c000000 is a firmware carve-out under Gunyah.
++	 */
++	ldr		x0, [x20, #40]
++	ldr		x4, [x20, #56]
++	ldr		x6, [x20, #72]
++	cbz		x0, Lsweet_mark_done
++	cmp		x4, #(4 * 64)
++	b.lo	Lsweet_mark_done
++	and		x7, x0, #(ARM_TT_L2_OFFMASK)
++	mov		x8, #(ARM_TT_L2_SIZE)
++	sub		x8, x8, x7
++	udiv	x8, x8, x4
++	cmp		x6, x8
++	csel	x6, x6, x8, lo
++	cmp		x6, #64
++	b.lo	Lsweet_mark_done
++	sub		x6, x6, #32
++	madd	x0, x6, x4, x0
+ 	mov		w1, #-1
+ 	mov		x2, #32
+-	mov		x4, #4320
+ Lsweet_mark_row:
+ 	mov		x3, #64
+ 	mov		x5, x0
+@@ -541,6 +561,7 @@ Lsweet_mark_pixel:
+ 	subs	x2, x2, #1
+ 	b.ne	Lsweet_mark_row
+ 	dsb		sy
++Lsweet_mark_done:
+ #endif
+ 
+ 	// Set low reset vector before attempting any loads
+@@ -697,13 +718,16 @@ Lkernelcache_base_found:
+ 	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+ 	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
+ 	 */
+-	MOV64	x10, 0x9c000000
++	ldr		x10, [x20, #40]			// boot_args Video.v_baseAddr
++	cbz		x10, Lsweet_fb_map_done
++	and		x10, x10, #(~ARM_TT_L2_OFFMASK)	// the 32MB block holding it
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+ 	lsr		x12, x12, #(ARM_TT_L2_SHIFT)
+ 	add		x13, x25, #(2 * PGBYTES)
+ 	str		x11, [x13, x12, lsl #TTE_SHIFT]
++Lsweet_fb_map_done:
+ #endif
+ 
+ 	/* Ensure TTEs are visible */
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 7dcca46..d6b2949 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -13,13 +13,16 @@
+ #include <pexpert/pexpert.h>
+ 
+ /*
+- * start.s and arm_vm_init map one 32MB block at 0x9c000000. It holds the
+- * splash framebuffer of both boards (sweet 0x9c000000 1080x2400, Poco F1
+- * 0x9d400000 1080x2246); sweet_early_set_video picks it from boot_args.
++ * start.s and arm_vm_init map one 32MB block: the one holding the boot_args
++ * framebuffer start (sweet 0x9c000000 1080x2400, Poco F1 0x9d400000 1080x2246,
++ * both in the block at 0x9c000000; Nothing Phone (3a) 0xe3940000 1080x2392 in
++ * the block at 0xe2000000). sweet_early_set_video picks it from boot_args and
++ * clips the height to the rows inside that block.
+  */
+-#define EARLY_BLOCK_PA 0x9c000000ull
+ #define EARLY_BLOCK_SIZE 0x2000000ull
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)EARLY_BLOCK_PA;
++static uint64_t early_block_pa = 0x9c000000ull;
++#define EARLY_BLOCK_PA early_block_pa
++static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000ull;
+ static unsigned int early_width = 1080u, early_height = 2400u, early_stride = 4320u / 4;
+ static uint64_t early_off;
+ #define EARLY_FB early_fb
+@@ -200,17 +203,32 @@ sweet_early_flush_log(void)
+ void
+ sweet_early_set_video(uint64_t pa, uint64_t width, uint64_t height, uint64_t rowbytes)
+ {
+-	if (pa < EARLY_BLOCK_PA || width == 0 || height <= 32 || rowbytes < width * 4 ||
+-	    pa + height * rowbytes > EARLY_BLOCK_PA + EARLY_BLOCK_SIZE) {
++	uint64_t block = pa & ~(EARLY_BLOCK_SIZE - 1);
++
++	if (pa == 0 || width == 0 || rowbytes < width * 4) {
+ 		return; /* keep the sweet default */
+ 	}
+-	early_off = pa - EARLY_BLOCK_PA;
++	/* start.s mapped only this block: the rows past its end are not ours to touch */
++	if (pa + height * rowbytes > block + EARLY_BLOCK_SIZE) {
++		height = (block + EARLY_BLOCK_SIZE - pa) / rowbytes;
++	}
++	if (height <= 32) {
++		return;
++	}
++	early_block_pa = block;
++	early_off = pa - block;
+ 	early_width = (unsigned int)width;
+ 	early_height = (unsigned int)height;
+ 	early_stride = (unsigned int)(rowbytes / 4);
+ 	early_fb = (volatile uint32_t *)(uintptr_t)pa; /* bootstrap V=P */
+ }
+ 
++uint64_t
++sweet_early_fb_block(void)
++{
++	return early_block_pa;
++}
++
+ void
+ sweet_early_relocate(uint64_t base)
+ {
+diff --git a/osfmk/arm64/sweet_early.h b/osfmk/arm64/sweet_early.h
+index 3ba05e4..6a9a58d 100644
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -12,6 +12,7 @@ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+ void sweet_early_relocate(uint64_t base);
+ void sweet_early_set_video(uint64_t pa, uint64_t width, uint64_t height, uint64_t rowbytes);
++uint64_t sweet_early_fb_block(void);
+ void sweet_early_disable(void);
+ void sweet_early_set_cmdline(const char *cmdline);
+ void sweet_early_flush_log(void);
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 6089db9..a9f010b 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -20,6 +20,11 @@ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS,
+ #if defined(SWEET)
+ /* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
+ SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++/* GICv3 frames; the Nothing Phone (3a)'s Gunyah vGIC has GICv4 frames (VLPI) without GICR_TYPER.VLPIS */
++SECURITY_READ_ONLY_LATE(vm_offset_t) sweet_gicr_stride = GICR_PE_SIZE;
++#define GICR_STRIDE sweet_gicr_stride
++#else
++#define GICR_STRIDE GICR_PE_SIZE
+ #endif
+ 
+ static vm_offset_t gicd_base;
+@@ -56,7 +61,7 @@ find_gicr_pe_base()
+ 	// We only care about aff1 and aff0
+ 	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+ 
+-	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
++	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_STRIDE) {
+ 		vm_offset_t gicr_pe_base = gicr_base + offset;
+ 		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
+ 		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+@@ -117,6 +122,20 @@ pe_init_fiq()
+ 			sweet_vtimer_intid = intid;
+ 		}
+ 		kprintf("SWEET GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
++
++		void const *stride_prop;
++		unsigned int stride_size;
++		if (SecureDTGetProperty(entry, "redistributor-stride", &stride_prop, &stride_size) == kSuccess) {
++			if (stride_size != sizeof(uint32_t)) {
++				panic("%s: invalid redistributor-stride size %u", __func__, stride_size);
++			}
++			uint32_t stride = *(const uint32_t *)stride_prop;
++			if (stride != 0x20000 && stride != 0x40000) {
++				panic("%s: redistributor stride 0x%x is neither GICv3 nor GICv4", __func__, stride);
++			}
++			sweet_gicr_stride = stride;
++		}
++		kprintf("SWEET GIC: redistributor stride 0x%lx\n", (unsigned long)sweet_gicr_stride);
+ #endif
+ 
+ 		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();

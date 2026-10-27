@@ -1,0 +1,25 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 5fa92ee..1c35eff 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -848,6 +848,20 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 				sweet_as_bgra_logged |= 1u << i;
+ 				IOLog("SWEET SURF: '%s' surfaces are created as plain BGRA\n", sweet_as_bgra[i].name);
+ 			}
++			/*
++			 * sweetsurf_lossless=1: refuse '&BGA' instead (kIOReturnUnsupported), so QuartzCore may fall back to an
++			 * uncompressed surface. The remap alone did not stop backboardd's push_surface assertion (ast5, ast7p):
++			 * every assertion follows the creation of such a surface.
++			 */
++			static int refuse = -1;
++			if (refuse < 0) {
++				int r = 0;
++				PE_parse_boot_argn("sweetsurf_lossless", &r, sizeof(r));
++				refuse = r == 1 ? 1 : 0;
++			}
++			if (refuse && sweet_as_bgra[i].format == SWEET_FORMAT_BGRA_LOSSLESS) {
++				return kIOReturnUnsupported;
++			}
+ 			s->pixelFormat = SWEET_FORMAT_BGRA;
+ 			lossless = true;        /* one plane, the plane info is ignored */
+ 			break;

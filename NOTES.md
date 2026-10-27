@@ -126,6 +126,15 @@
     0x44010000, GMEM 576 KiB at 0x100000, UBWC hbb 15 swizzle 2, TIMESTAMP = GMU AO counter). sweet_a810.c publishes
     SweetAdreno630 (SweetGPUChipID from the param) after stage 16. No SMMU fault check / recovery yet. Userland:
     Chlorophyll/Turnip needs an A810 (gen8) build on the Mac.
+  * ast7p (kernel 2000-2008, "xnu-kernel (6)", sweetpanel=1 default, sweeta810=16): 2008 runs (scaled copy on 3
+    threads, MC0/SH0 bandwidth votes acked, surface cache active) but recents still crash and Settings froze (user):
+    log logs/ast7p, backboardd push_surface assertion x4 -> launchd reboot, each right after backboardd created the
+    828x1792 '&BGA' surface (remapped to BGRA). So it is not the backlight service (ast5-p1 working was luck or a
+    path not taken). 2010: sweetsurf_lossless=1 refuses '&BGA' (kIOReturnUnsupported) to see whether QuartzCore falls
+    back. The real way out is backboardd on the GPU (Chlorophyll), which skips the CPU renderer.
+  * Chlorophyll on Linux (user asked; in progress, /home/saalim/os/ios/chl-work): clang-18 -target arm64e-apple-ios18.0
+    + Theos ld64 (~/theos/toolchain/linux/iphone/bin/ld via --ld-path) + ~/theos/sdks/iPhoneOS16.5.sdk links an ObjC
+    arm64e dylib; ld warns "incompatible arm64e ABI compiler" (clang 18 emits subtype caps 0x00, Xcode 0x80).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

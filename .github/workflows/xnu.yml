@@ -22,7 +22,7 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main, develop, xnu11215, ios26]
+    branches: [main, develop, xnu11215, ios26, asteroids-ios26]
     paths:
       - "xnu/patches/**"
       - "xnu/patches-11215/**"
@@ -36,7 +36,7 @@ concurrency:
 env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
-  MACOS_VERSION: ${{ inputs.macos_version || (github.ref_name == 'main' && '13.5' || (github.ref_name == 'ios26' && '26.5' || '15.3')) }}
+  MACOS_VERSION: ${{ inputs.macos_version || (github.ref_name == 'main' && '13.5' || ((github.ref_name == 'ios26' || github.ref_name == 'asteroids-ios26') && '26.5' || '15.3')) }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
   # Bump to throw away every cache (host tools + ccache) at once. See docs/CI_CACHE.md.
@@ -60,7 +60,7 @@ jobs:
     # (Xcode 16's iig emits IORPC.kernelContent, which that xnu lacks).
     # 15.x sources (xnu-11215): macos-15 with Xcode 16.2 (the macOS 15.2/15.3 era toolchain).
     # 26.x sources (xnu-12377): macos-26 with Xcode 26.1 (what dxb's own CI builds 26.5 with).
-    runs-on: ${{ startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || (github.ref_name == 'ios26' && '26.5' || '15.3')), '26.') && 'macos-26' || (startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3'), '15.') && 'macos-15' || 'macos-14') }}
+    runs-on: ${{ startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || ((github.ref_name == 'ios26' || github.ref_name == 'asteroids-ios26') && '26.5' || '15.3')), '26.') && 'macos-26' || (startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3'), '15.') && 'macos-15' || 'macos-14') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

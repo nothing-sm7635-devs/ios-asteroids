@@ -2,7 +2,7 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> 2026-10-27: branch `asteroids` (Nothing Phone (3a), SM7635 under Gunyah), iOS 26 port, NOT built or booted <<<
+### >>> 2026-10-27: branch `asteroids-ios26` (Nothing Phone (3a), SM7635 under Gunyah), iOS 26 port, NOT built or booted <<<
 * Local branch off develop 37a7a7a. Kernel: `xnu/patches-12377/2000-asteroids-board.patch` (applies on the full
   12377 stack, checked locally with `git apply`; not compiled: needs the macOS CI):
   `sweet_board_asteroids()` ("nothing,asteroids" in the ADT root compatible); sweet_ufs_init starts none of the

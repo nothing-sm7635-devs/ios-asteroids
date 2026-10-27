@@ -74,7 +74,12 @@
     undeclared in bsd/. Fixed in 1f88369 (local extern like sweet_dma; include dropped) -> CI run 40570306243.
   * CI run 40570306243 SUCCESS (errors.txt empty) -> research/ios26/kernel-ast4. Images (2026-10-28):
     ios26-ast4-boot.img (`sweetpanel=2 sweetcpufreq=gov sweeta810=16`, GPU fw in ADT) and ios26-ast4-safe-boot.img
-    (`sweetpanel=1 sweetcpufreq=gov sweeta810=0`, no GPU fw). ast4 fastboot-booted; result pending.
+    (`sweetpanel=1 sweetcpufreq=gov sweeta810=0`, no GPU fw). ast4 fastboot-booted (2026-10-28 01:32): Apple logo, then "SWEET EARLY PANIC: Unhandled implementation
+    specific error" = SError (sleh arm64_platform_error). Log logs/ast4 (recovery pull, flush #1 only): RTC read OK
+    (APID 94, EE 1), reboot reason readable (SDAM APID 9, EE 0, 0x7148 = 0), backlight service published and
+    backboardd did NOT crash (frames swapping); no SWEET A810 line: the GPU thread starts at 10 s, the panic came
+    before the 2nd 10 s flush -> most likely a stage >= 5 access. Fix in progress: A810_LOG syncs the persistent log
+    after every A810 line from mode 5 on. Meanwhile ios26-ast4-gpu4 (same kernel, sweeta810=4) to test the rest.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

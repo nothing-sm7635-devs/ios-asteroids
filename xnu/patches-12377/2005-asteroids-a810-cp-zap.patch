@@ -11,7 +11,7 @@ index 669fc49..b1058ea 100644
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_reboot.c			standard
 diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
-index ed65464..014ce93 100644
+index ed65464..fb09dcf 100644
 --- a/bsd/dev/sweet_a810.c
 +++ b/bsd/dev/sweet_a810.c
 @@ -1,9 +1,10 @@
@@ -28,7 +28,7 @@ index ed65464..014ce93 100644
   *   sweeta810level=L   the GPU level stage 11 votes (default 6: 763 MHz on the 3a's bin; clamped to the table)
   *   sweeta810fwpin=0   stage 9: accept a gen80300_gmu.bin other than the pinned one (default 1: SHA-256, size and the
   *                      15 block records must match this phone's own file); the block structure is checked either way
-@@ -21,28 +22,48 @@
+@@ -21,28 +22,50 @@
   *   9  8, and the GMU firmware (ADT /sweet-gpu "gmu-firmware") loaded, CM3 released, HFI ready awaited
   *  10  9 as the whole cold start: the HFI startup messages (GPU_PERF table, bandwidth table, core start, start)
   *  11  10, and GX on: HFI GX_BW_PERF_VOTE at sweeta810level, OOB GPU_SET, then RBBM_STATUS and friends
@@ -77,10 +77,12 @@ index ed65464..014ce93 100644
 +#include <vm/vm_kern_xnu.h>
 +
 +extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++/* sweet_ufs.c: write the console ring to the persistent log now (a stage may raise an SError) */
++extern void sweet_log_sync(void);
  #include <pexpert/pexpert.h>
  #include <pexpert/device_tree.h>
  #include "sweet_board.h"
-@@ -50,6 +71,8 @@
+@@ -50,6 +73,8 @@
  #include "sweet_a810_smmu.h"
  #include "sweet_a810_hfi.h"
  #include "sweet_a810_gmu.h"
@@ -89,7 +91,7 @@ index ed65464..014ce93 100644
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
-@@ -58,7 +81,7 @@ extern kern_return_t thread_terminate(thread_t);
+@@ -58,10 +83,22 @@ extern kern_return_t thread_terminate(thread_t);
  void sweet_a810_probe(void);
  
  #define A810_START_DELAY_S      10u
@@ -98,7 +100,72 @@ index ed65464..014ce93 100644
  #define A810_FW_MAX             0x100000u
  
  static unsigned a810_mode;
-@@ -233,6 +256,7 @@ a810_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
++
++/*
++ * Every line from mode 5 on goes to the persistent log before the next register access: a GMU/CP access that
++ * raises an SError panics before the 10 s log flush, so without this the last stage's lines are lost.
++ */
++#define A810_LOG(...) do { \
++	printf(__VA_ARGS__); \
++	if (a810_mode >= 5) { \
++		sweet_log_sync(); \
++	} \
++} while (0)
++
+ static vm_offset_t a810_win[GPB_ALL_WINDOWS];
+ static const vm_size_t a810_win_size[GPB_ALL_WINDOWS] = {
+ 	[GPB_WIN_GCC_GPU] = 0x1000, [GPB_WIN_GCC_VOTE] = 0x1000, [GPB_WIN_GPUCC] = GPB_GPUCC_SIZE,
+@@ -114,9 +151,9 @@ a810_stage(void *cookie, unsigned window)
+ 		                            "GMU RSCC"};
+ 	(void)cookie;
+ 	if (window == GPB_STAGE_CX_GDSC) {
+-		printf("SWEET A810: next: power the CX GDSC (GPUCC 0x9080)\n");
++		A810_LOG("SWEET A810: next: power the CX GDSC (GPUCC 0x9080)\n");
+ 	} else if (window < GPB_ALL_WINDOWS) {
+-		printf("SWEET A810: next: read %s at %#llx\n", names[window], a810_win_pa[window]);
++		A810_LOG("SWEET A810: next: read %s at %#llx\n", names[window], a810_win_pa[window]);
+ 	}
+ }
+ 
+@@ -134,22 +171,22 @@ static const struct gpb_io a810_io = {
+ static void
+ a810_report(const struct gpb_result *r)
+ {
+-	printf("SWEET A810: mode %u: gcc %s cc %s smmu %s gpu %s, %u writes, io_error %d\n", r->mode,
++	A810_LOG("SWEET A810: mode %u: gcc %s cc %s smmu %s gpu %s, %u writes, io_error %d\n", r->mode,
+ 	    gpb_state_text(r->gcc), gpb_state_text(r->cc), gpb_state_text(r->smmu), gpb_state_text(r->gpu), r->writes, r->io_error);
+-	printf("SWEET A810: GCC cfg_ahb %#x -> %#x (enabled by us %u), memnoc_gfx %#x, snoc_dvm %#x, ddrss_axi %#x, gpll0 vote %#x\n",
++	A810_LOG("SWEET A810: GCC cfg_ahb %#x -> %#x (enabled by us %u), memnoc_gfx %#x, snoc_dvm %#x, ddrss_axi %#x, gpll0 vote %#x\n",
+ 	    r->cfg_ahb, r->cfg_ahb_after, r->enabled_ahb, r->memnoc, r->dvm, r->axi, r->pll_vote);
+-	printf("SWEET A810: GPUCC cx_gdscr %#x hw_ctrl %#x gx_gdscr %#x ahb %#x smmu_vote %#x cx_gmu %#x\n",
++	A810_LOG("SWEET A810: GPUCC cx_gdscr %#x hw_ctrl %#x gx_gdscr %#x ahb %#x smmu_vote %#x cx_gmu %#x\n",
+ 	    r->cx_gdscr, r->cx_hwctrl, r->gx_gdscr, r->cc_ahb, r->cc_smmu, r->cc_gmu);
+ 	if (r->mode >= 3) {
+-		printf("SWEET A810: CX power-up: before %#x init %#x after %#x hw_ctrl %#x, %u tries, powered cx %u clocks %u, refused %u\n",
++		A810_LOG("SWEET A810: CX power-up: before %#x init %#x after %#x hw_ctrl %#x, %u tries, powered cx %u clocks %u, refused %u\n",
+ 		    r->cx_before, r->cx_init, r->cx_after, r->cx_hwctrl_after, r->cx_tries, r->powered_cx, r->powered_clocks, r->cx_refused);
+ 	}
+ 	if (r->smmu == GPB_DONE) {
+-		printf("SWEET A810: GPU SMMU sCR0 %#x ID0 %#x ID1 %#x ID2 %#x sGFSR %#x, %u SMRs, %u valid\n",
++		A810_LOG("SWEET A810: GPU SMMU sCR0 %#x ID0 %#x ID1 %#x ID2 %#x sGFSR %#x, %u SMRs, %u valid\n",
+ 		    r->scr0, r->id0, r->id1, r->id2, r->gfsr, r->num_smr, r->smr_valid);
+ 		for (unsigned i = 0; i < r->num_smr; i++) {
+ 			if (r->smr[i] != 0 || r->s2cr[i] != GPB_SMMU_S2CR_FAULT) {
+-				printf("SWEET A810:   SMR%u %#x S2CR %#x\n", i, r->smr[i], r->s2cr[i]);
++				A810_LOG("SWEET A810:   SMR%u %#x S2CR %#x\n", i, r->smr[i], r->s2cr[i]);
+ 			}
+ 		}
+ 	}
+@@ -158,7 +195,7 @@ a810_report(const struct gpb_result *r)
+ static void
+ a810_gate_failed(unsigned stage, const char *why)
+ {
+-	printf("SWEET A810: stage %u gate failed: %s; stopping here\n", stage, why);
++	A810_LOG("SWEET A810: stage %u gate failed: %s; stopping here\n", stage, why);
+ }
+ 
+ /* ---- SHA-256 (NativeAdrenoSha256.cpp, MIT) ---- */
+@@ -233,13 +270,14 @@ a810_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
  
  /* ---- Stage 5: the GMU's SMMU context (GpuPowerProbe.cpp gmuContext) ---- */
  static vm_offset_t a810_pool_va;        /* mode 4's write-combined map of the GMU pool; the context keeps using it */
@@ -106,15 +173,261 @@ index ed65464..014ce93 100644
  static int a810_ctx_ready;
  
  static void
-@@ -253,6 +277,7 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
- 	printf("SWEET A810: next: GMU SMMU context bank %u asid %u slot %u sid %u, mapping the SMMU %#llx + %#llx\n",
+ a810_ctx_progress(uint32_t step)
+ {
+ 	static const char *const names[] = {"-", "allocate", "prepare", "program", "attach", "observe", "map", "ready"};
+-	printf("SWEET A810: gmuctx step %u %s\n", step, step < 8 ? names[step] : "?");
++	A810_LOG("SWEET A810: gmuctx step %u %s\n", step, step < 8 ? names[step] : "?");
+ }
+ 
+ static int
+@@ -250,9 +288,10 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
+ 		a810_gate_failed(5, gpb_gmu_gate_text(gate));
+ 		return 0;
+ 	}
+-	printf("SWEET A810: next: GMU SMMU context bank %u asid %u slot %u sid %u, mapping the SMMU %#llx + %#llx\n",
++	A810_LOG("SWEET A810: next: GMU SMMU context bank %u asid %u slot %u sid %u, mapping the SMMU %#llx + %#llx\n",
  	    GPB_GMU_BANK, GPB_GMU_ASID, GPB_GMU_SLOT, GPB_GMU_SID, GPB_SMMU_BASE, GPB_SMMU_WINDOW);
  	vm_offset_t smmu = ml_io_map(GPB_SMMU_BASE, GPB_SMMU_WINDOW);   /* lives for the boot: the bank points at the pool */
 +	a810_smmu_va = smmu;
  	if (smmu == 0) {
  		a810_gate_failed(5, "SMMU map failed");
  		return 0;
-@@ -667,25 +692,28 @@ a810_stage9(void)
+@@ -261,22 +300,22 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
+ 	int status = a810_gmu_context_bringup((volatile uint8_t *)smmu, GPB_SMMU_WINDOW, GPB_GMU_POOL_BASE,
+ 	    (volatile uint8_t *)a810_pool_va, GPB_GMU_POOL_BYTES, GPB_GMU_BANK, GPB_GMU_ASID, GPB_GMU_SLOT, GPB_GMU_SID,
+ 	    a810_ctx_progress, &g);
+-	printf("SWEET A810: stage 5 gmuctx %s step %u: oas %u id2 %#x program %s p%u w%u r%u e%u route %s p%u w%u v%u map %s "
++	A810_LOG("SWEET A810: stage 5 gmuctx %s step %u: oas %u id2 %#x program %s p%u w%u r%u e%u route %s p%u w%u v%u map %s "
+ 	    "leaves %u tlb_polls %u mismatch %#x\n", a810_smmu_status_text(g.status), g.step, g.output_bits, g.id2,
+ 	    a810_smmu_status_text(g.program_status), g.program_phase, g.program_writes, g.program_readback_valid,
+ 	    g.program_enabled, a810_smmu_status_text(g.route_status), g.route_phase, g.route_writes, g.routes_verified,
+ 	    a810_smmu_status_text(g.map_status), g.leaves, g.tlb_polls, g.mismatch);
+-	printf("SWEET A810: stage 5 gmuctx ttbr0 %#llx sctlr %#x cbar %#x smr %#x s2cr %#x, after: gfsr %#x fsr %#x\n",
++	A810_LOG("SWEET A810: stage 5 gmuctx ttbr0 %#llx sctlr %#x cbar %#x smr %#x s2cr %#x, after: gfsr %#x fsr %#x\n",
+ 	    g.ttbr0, g.sctlr, g.cbar, g.smr, g.s2cr, g.gfsr, g.fsr);
+ 	if (g.mismatch) {
+ 		const struct a810_smmu_image *v = &g.image;
+-		printf("SWEET A810: gmuctx readback cbar %#x cba2r %#x tcr %#x tcr2 %#x mair %#x/%#x ttbr1 %#llx sctlr %#x\n",
++		A810_LOG("SWEET A810: gmuctx readback cbar %#x cba2r %#x tcr %#x tcr2 %#x mair %#x/%#x ttbr1 %#llx sctlr %#x\n",
+ 		    v->cbar, v->cba2r, v->tcr, v->tcr2, v->mair0, v->mair1, v->ttbr1, v->sctlr);
+ 	}
+ 	struct a810_gmu_payload p[A810_PAYLOADS];
+ 	if (status == 0 && a810_gmu_context_payloads(p) == 0) {
+ 		a810_ctx_ready = 1;
+-		printf("SWEET A810: gmuctx icache %#llx+%#llx@%#llx log %#llx@%#llx hfi %#llx+%#llx@%#llx (pool %#llx)\n",
++		A810_LOG("SWEET A810: gmuctx icache %#llx+%#llx@%#llx log %#llx@%#llx hfi %#llx+%#llx@%#llx (pool %#llx)\n",
+ 		    p[A810_PAYLOAD_ICACHE].physical, p[A810_PAYLOAD_ICACHE].bytes, p[A810_PAYLOAD_ICACHE].iova,
+ 		    p[A810_PAYLOAD_LOG].physical, p[A810_PAYLOAD_LOG].iova, p[A810_PAYLOAD_HFI].physical,
+ 		    p[A810_PAYLOAD_HFI].bytes, p[A810_PAYLOAD_HFI].iova, GPB_GMU_POOL_BASE);
+@@ -294,13 +333,13 @@ static uint32_t a810_db_status[4] = {0, 0, ~0u, ~0u};   /* version, magic, parse
+ static void
+ a810_log_clocks(const char *when, const struct gpb_gmu_clocks *k, int io_error)
+ {
+-	printf("SWEET A810: gmuclk %s pll0 mode %#x op %#x st %#x l %#x a %#x user %#x io %d\n", when, k->pll0_mode,
++	A810_LOG("SWEET A810: gmuclk %s pll0 mode %#x op %#x st %#x l %#x a %#x user %#x io %d\n", when, k->pll0_mode,
+ 	    k->pll0_opmode, k->pll0_status, k->pll0_l, k->pll0_alpha, k->pll0_user, io_error);
+-	printf("SWEET A810: gmuclk %s rcg gmu %#x/%#x hub %#x/%#x div %#x ff %#x/%#x\n", when, k->gmu_cmd, k->gmu_cfg,
++	A810_LOG("SWEET A810: gmuclk %s rcg gmu %#x/%#x hub %#x/%#x div %#x ff %#x/%#x\n", when, k->gmu_cmd, k->gmu_cfg,
+ 	    k->hub_cmd, k->hub_cfg, k->hub_div, k->ff_cmd, k->ff_cfg);
+-	printf("SWEET A810: gmuclk %s br gmu %#x cxo %#x ahb %#x hubcx %#x hubaon %#x memnoc %#x\n", when, k->branch[0],
++	A810_LOG("SWEET A810: gmuclk %s br gmu %#x cxo %#x ahb %#x hubcx %#x hubaon %#x memnoc %#x\n", when, k->branch[0],
+ 	    k->branch[1], k->branch[2], k->branch[3], k->branch[4], k->branch[5]);
+-	printf("SWEET A810: gmuclk %s aon %u%u%u%u%u%u%u gcc axi %#x mem %#x vote %#x\n", when,
++	A810_LOG("SWEET A810: gmuclk %s aon %u%u%u%u%u%u%u gcc axi %#x mem %#x vote %#x\n", when,
+ 	    gpb_branch_digit(k->critical[0]), gpb_branch_digit(k->critical[1]), gpb_branch_digit(k->critical[2]),
+ 	    gpb_branch_digit(k->critical[3]), gpb_branch_digit(k->critical[4]), gpb_branch_digit(k->critical[5]),
+ 	    gpb_branch_digit(k->critical[6]), k->axi, k->memnoc, k->gpll0_vote);
+@@ -311,20 +350,20 @@ a810_stage6(const struct gpb_result *r)
+ {
+ 	static const char *const db_text[] = {"ok", "argument", "version", "corrupt", "duplicate", "missing"};
+ 	struct gpb_result scratch = *r;        /* gpb_rd records io_error into this copy */
+-	printf("SWEET A810: next: read the GMU clock tree (GPUCC PLL0, RCGs, branches)\n");
++	A810_LOG("SWEET A810: next: read the GMU clock tree (GPUCC PLL0, RCGs, branches)\n");
+ 	gpb_read_gmu_clocks(&a810_io, &scratch, &a810_clocks);
+ 	if (a810_clocks.done) {
+ 		a810_log_clocks("before", &a810_clocks, scratch.io_error);
+ 	} else {
+-		printf("SWEET A810: gmuclk skipped (GPUCC not read)\n");
++		A810_LOG("SWEET A810: gmuclk skipped (GPUCC not read)\n");
+ 	}
+ 	size_t db_bytes = 0;
+ 	uint64_t db_pa = sweet_a810_cmd_db(&db_bytes);
+-	printf("SWEET A810: next: read the command DB %#llx + %#zx\n", db_pa, db_bytes);
++	A810_LOG("SWEET A810: next: read the command DB %#llx + %#zx\n", db_pa, db_bytes);
+ 	vm_offset_t db = ml_io_map(db_pa, db_bytes);
+ 	uint8_t *copy = kalloc_data(db_bytes, Z_WAITOK);   /* kept: the vote inputs point into it */
+ 	if (db == 0 || copy == NULL) {
+-		printf("SWEET A810: stage 6 clocks %s, cmddb map/copy failed\n", a810_clocks.done ? "read" : "skipped");
++		A810_LOG("SWEET A810: stage 6 clocks %s, cmddb map/copy failed\n", a810_clocks.done ? "read" : "skipped");
+ 		return 1;                      /* rootstockos: only stage 10's gate needs the table */
+ 	}
+ 	for (size_t i = 0; i < db_bytes / 4; ++i) {
+@@ -349,7 +388,7 @@ a810_stage6(const struct gpb_result *r)
+ 	a810_db_status[2] = parse;
+ 	a810_db_status[3] = build;
+ 	const AdrenoHfiStartupConfig *c = &a810_startup;
+-	printf("SWEET A810: stage 6 clocks %s pll0 %#x gmu_rcg %#x hub_rcg %#x; cmddb v %#x magic %#x parse %u %s build %d "
++	A810_LOG("SWEET A810: stage 6 clocks %s pll0 %#x gmu_rcg %#x hub_rcg %#x; cmddb v %#x magic %#x parse %u %s build %d "
+ 	    "gmxc %u aux gfx %u cx %u mx %u sh0 %u mc0 %u acv %u cn0 %#x; hfi gpu %u gmu %u bw %u\n",
+ 	    a810_clocks.done ? "read" : "skipped", a810_clocks.pll0_mode, a810_clocks.gmu_cmd, a810_clocks.hub_cmd,
+ 	    version, magic, parse, parse < 6 ? db_text[parse] : "?", (int)build, a810_votes.gmxc_present,
+@@ -364,17 +403,17 @@ a810_stage6(const struct gpb_result *r)
+ 			if (!id) {
+ 				break;
+ 			}
+-			printf("SWEET A810: cmddb slave %u id %#x cnt %u\n", i, id, cnt);
++			A810_LOG("SWEET A810: cmddb slave %u id %#x cnt %u\n", i, id, cnt);
+ 		}
+ 	} else if (build == 0) {
+-		printf("SWEET A810: hfi table %u ifpc %u cnoc %u ddr %u\n", c->table_format, c->enable_ifpc, c->cnoc_count,
++		A810_LOG("SWEET A810: hfi table %u ifpc %u cnoc %u ddr %u\n", c->table_format, c->enable_ifpc, c->cnoc_count,
+ 		    c->ddr_count);
+ 		for (unsigned i = 0; i < c->gpu_count && i < 16; ++i) {
+-			printf("SWEET A810: hfi gpu%u %llu kHz vote %#x dep %#x\n", i, c->gpu[i].hz / 1000, c->gpu[i].vote,
++			A810_LOG("SWEET A810: hfi gpu%u %llu kHz vote %#x dep %#x\n", i, c->gpu[i].hz / 1000, c->gpu[i].vote,
+ 			    c->gpu_dependency[i]);
+ 		}
+ 		for (unsigned i = 0; i < c->gmu_count && i < 4; ++i) {
+-			printf("SWEET A810: hfi gmu%u %llu kHz vote %#x\n", i, c->gmu[i].hz / 1000, c->gmu[i].vote);
++			A810_LOG("SWEET A810: hfi gmu%u %llu kHz vote %#x\n", i, c->gmu[i].hz / 1000, c->gmu[i].vote);
+ 		}
+ 	}
+ 	return 1;
+@@ -389,11 +428,11 @@ a810_stage7(const struct gpb_result *r)
+ 	static const char *const fail[] = {"ok", "refused", "timeout", "io"};
+ 	struct gpb_result scratch = *r;
+ 	struct gpb_gmu_clock_on *o = &a810_clock_on;
+-	printf("SWEET A810: next: GMU clocks on: GPLL0 vote, PLL0 700 MHz, hub 200 MHz, gmu 350 MHz, gpu_cc_ahb\n");
++	A810_LOG("SWEET A810: next: GMU clocks on: GPLL0 vote, PLL0 700 MHz, hub 200 MHz, gmu 350 MHz, gpu_cc_ahb\n");
+ 	a810_clocks_on = 1;
+ 	gpb_gmu_clocks_on(&a810_io, &scratch, &a810_clocks, o);
+ 	a810_clocks_on = 0;
+-	printf("SWEET A810: stage 7 gmuclk on step %u %s writes %u running %u lock %u hub %u/%u gmu %u/%u vote %#x "
++	A810_LOG("SWEET A810: stage 7 gmuclk on step %u %s writes %u running %u lock %u hub %u/%u gmu %u/%u vote %#x "
+ 	    "pll0 %#x/%#x/%#x hub %#x/%#x gmu %#x/%#x ahb %#x\n", o->step, o->failed < 4 ? fail[o->failed] : "?", o->writes,
+ 	    o->pll_was_running, o->lock_polls, o->hub_root_polls, o->hub_polls, o->gmu_root_polls, o->gmu_polls, o->vote,
+ 	    o->pll0_mode, o->pll0_opmode, o->pll0_user, o->hub_cmd, o->hub_cfg, o->gmu_cmd, o->gmu_cfg, o->ahb);
+@@ -419,7 +458,7 @@ a810_stage8(const struct gpb_result *r)
+ 		a810_win[w] = ml_io_map(a810_win_pa[w], a810_win_size[w]);
+ 	}
+ 	if (!a810_win[GPB_WIN_GMU] || !a810_win[GPB_WIN_RSCC]) {
+-		printf("SWEET A810: gmu map failed gmu %d rscc %d\n", a810_win[GPB_WIN_GMU] != 0, a810_win[GPB_WIN_RSCC] != 0);
++		A810_LOG("SWEET A810: gmu map failed gmu %d rscc %d\n", a810_win[GPB_WIN_GMU] != 0, a810_win[GPB_WIN_RSCC] != 0);
+ 		a810_gate_failed(8, "GMU/RSCC map failed");
+ 		return 0;
+ 	}
+@@ -427,12 +466,12 @@ a810_stage8(const struct gpb_result *r)
+ 	struct gpb_gmu_state *g = &a810_gmu_state;
+ 	gpb_read_gmu_state(&a810_io, &scratch, 1, g);
+ 	const uint32_t *v = g->v;
+-	printf("SWEET A810: stage 8 gmu gate %s reset %#x hfi %#x ao %#x cm3 %#x rscc %#x io %d\n",
++	A810_LOG("SWEET A810: stage 8 gmu gate %s reset %#x hfi %#x ao %#x cm3 %#x rscc %#x io %d\n",
+ 	    gpb_gmu_state_text(g->gate), v[0], v[1], v[2], v[3], g->rscc_busy, g->io_error);
+ 	if (g->done && !g->io_error) {
+-		printf("SWEET A810: gmu init %#x boot %#x cfg %#x gen8 %#x gen9 %#x gen10 %#x fence %#x\n", v[4], v[5], v[6],
++		A810_LOG("SWEET A810: gmu init %#x boot %#x cfg %#x gen8 %#x gen9 %#x gen10 %#x fence %#x\n", v[4], v[5], v[6],
+ 		    v[7], v[8], v[9], v[10]);
+-		printf("SWEET A810: gmu itcm0 %#x dtcm_ver %#x ao %#x:%#x then %#x (+%u)\n", v[11], v[12], v[14], v[13], v[15],
++		A810_LOG("SWEET A810: gmu itcm0 %#x dtcm_ver %#x ao %#x:%#x then %#x (+%u)\n", v[11], v[12], v[14], v[13], v[15],
+ 		    v[15] - v[13]);
+ 	}
+ 	return 1;
+@@ -516,7 +555,7 @@ a810_gmu_reset(const char *why)
+ 	}
+ 	int bad = io->write32(io->cookie, ShengGmuCore, GPB_GMU_CM3_SYSRESET, 1) || io->barrier(io->cookie) ||
+ 	    io->read32(io->cookie, ShengGmuCore, GPB_GMU_CM3_SYSRESET, &v);
+-	printf("SWEET A810: %s: GMU back in reset: CM3_SYSRESET %#x%s\n", why, v, bad || v != 1 ? " (NOT verified)" : "");
++	A810_LOG("SWEET A810: %s: GMU back in reset: CM3_SYSRESET %#x%s\n", why, v, bad || v != 1 ? " (NOT verified)" : "");
+ }
+ 
+ static int
+@@ -543,7 +582,7 @@ a810_stage9(void)
+ 	size_t fw_bytes = 0, pin_bytes = 0;
+ 	unsigned pin_blocks = 0, any = 0, pin = 1;
+ 	const uint8_t *fw = a810_adt_blob("gmu-firmware", &fw_bytes);
+-	printf("SWEET A810: ADT /sweet-gpu gmu-firmware %zu bytes, sqe-firmware %zu, zap-mbn %zu\n", fw_bytes,
++	A810_LOG("SWEET A810: ADT /sweet-gpu gmu-firmware %zu bytes, sqe-firmware %zu, zap-mbn %zu\n", fw_bytes,
+ 	    a810_adt_size("sqe-firmware"), a810_adt_size("zap-mbn"));
+ 	if (!fw) {
+ 		a810_gate_failed(9, "no gmu-firmware in the ADT (/sweet-gpu)");
+@@ -562,7 +601,7 @@ a810_stage9(void)
+ 	AdrenoFirmwareBlock blocks[32];
+ 	size_t count = 0;
+ 	AdrenoFirmwareResult plan = AdrenoFirmwarePlanGmu(fw, fw_bytes, regions, 3, blocks, 32, &count);
+-	printf("SWEET A810: gmu firmware sha256 %02x%02x%02x%02x%02x%02x%02x%02x... %s pin, plan %u, %zu blocks (pin %u)\n",
++	A810_LOG("SWEET A810: gmu firmware sha256 %02x%02x%02x%02x%02x%02x%02x%02x... %s pin, plan %u, %zu blocks (pin %u)\n",
+ 	    digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+ 	    pinned ? "matches the" : "differs from the", plan, count, pin_blocks);
+ 	if (plan != AdrenoFirmwareSuccess) {
+@@ -582,7 +621,7 @@ a810_stage9(void)
+ 		uint64_t pa = sweet_a810_gmu_window(extra[i], &bytes);
+ 		vm_offset_t va = ml_io_map(pa, bytes);
+ 		if (!va) {
+-			printf("SWEET A810: gmuboot map of window %u failed\n", extra[i]);
++			A810_LOG("SWEET A810: gmuboot map of window %u failed\n", extra[i]);
+ 			a810_gate_failed(9, "window map failed");
+ 			return 0;
+ 		}
+@@ -594,7 +633,7 @@ a810_stage9(void)
+ 		                                           (size_t)GPB_RSCC_SIZE};
+ 	ShengGmuStatus bind = ShengGmuBindMmio(mmio, &a810_cold.io);
+ 	if (bind != ShengGmuSuccess) {
+-		printf("SWEET A810: gmuboot bind refused (%u)\n", bind);
++		A810_LOG("SWEET A810: gmuboot bind refused (%u)\n", bind);
+ 		a810_gate_failed(9, "MMIO bind refused");
+ 		return 0;
+ 	}
+@@ -617,7 +656,7 @@ a810_stage9(void)
+ 	a810_cold.services = (ShengGmuServices){NULL, a810_svc_sha256, a810_svc_now_us, a810_svc_wait_us};
+ 	ShengGmuStartupResult *s = &a810_cold_result;
+ 	ShengGmuStatus status;
+-	printf("SWEET A810: next: %s: firmware %zu bytes, hfi@%#llx log@%#llx\n",
++	A810_LOG("SWEET A810: next: %s: firmware %zu bytes, hfi@%#llx log@%#llx\n",
+ 	    a810_mode >= 10 ? "GMU cold start with the HFI startup" : "GMU load to HFI ready", fw_bytes, c->hfi.iova,
+ 	    c->log.iova);
+ 	a810_gmu_started = 1;                  /* from here a failure puts the GMU back in reset */
+@@ -629,14 +668,14 @@ a810_stage9(void)
+ 		status = ShengGmuLoadAndStartHfi(&a810_cold, c, &s->load);
+ 	}
+ 	const ShengGmuResult *l = &s->load;
+-	printf("SWEET A810: stage 9 gmuboot %s phase %u hash %u reset_ok %u fw_ready %u hfi_ready %u init %#x hfi %#x "
++	A810_LOG("SWEET A810: stage 9 gmuboot %s phase %u hash %u reset_ok %u fw_ready %u hfi_ready %u init %#x hfi %#x "
+ 	    "writes %u reads %u polls %u ao %#x cm3 %#x\n", status < 11 ? sheng_text[status] : "?", l->phase,
+ 	    l->complete_hash_verified, l->reset_verified, l->firmware_ready_observed, l->hfi_ready_observed,
+ 	    l->firmware_init_result, l->hfi_status, l->write_attempts, l->read_attempts, l->poll_reads, l->ao_fault_status,
+ 	    l->cm3_fault_status);
+ 	if (a810_mode >= 10) {
+ 		const AdrenoHfiStartupResult *q = &s->protocol;
+-		printf("SWEET A810: stage 10 hfi startup %u stage %u acked %#x sent %u polls %u fw_err %#x hdr %#x t %lluus "
++		A810_LOG("SWEET A810: stage 10 hfi startup %u stage %u acked %#x sent %u polls %u fw_err %#x hdr %#x t %lluus "
+ 		    "health %u skipped %u (%#x)\n", s->protocol_status, q->stage, q->acknowledged_stages, q->published_commands,
+ 		    q->poll_reads, q->firmware_error, q->wire_header, q->elapsed_us, s->health_status, a810_cold.hfi.skipped,
+ 		    a810_cold.hfi.skipped_header);
+@@ -647,11 +686,11 @@ a810_stage9(void)
+ 	for (unsigned i = 0; i < 4; ++i) {
+ 		a810_cold.io.read32(a810_cold.io.cookie, ShengGmuCore, regs[i], &after[i]);
+ 	}
+-	printf("SWEET A810: gmuboot after reset %#x init %#x hfi %#x ao %#x log %#x %#x %#x %#x\n", after[0], after[1],
++	A810_LOG("SWEET A810: gmuboot after reset %#x init %#x hfi %#x ao %#x log %#x %#x %#x %#x\n", after[0], after[1],
+ 	    after[2], after[3], c->log.cpu[0], c->log.cpu[1], c->log.cpu[2], c->log.cpu[3]);
+ 	if (status != ShengGmuSuccess) {
+ 		/* ShengGmu reasserted reset itself on any failure after its first write; say whether that held. */
+-		printf("SWEET A810: stage %u failed (%s); ShengGmu reset_verified %u\n", a810_mode >= 10 ? 10u : 9u,
++		A810_LOG("SWEET A810: stage %u failed (%s); ShengGmu reset_verified %u\n", a810_mode >= 10 ? 10u : 9u,
+ 		    status < 11 ? sheng_text[status] : "?", l->reset_verified);
+ 		if (!l->reset_verified && l->write_attempts) {
+ 			a810_gmu_reset("cold start failed");
+@@ -659,7 +698,7 @@ a810_stage9(void)
+ 		return 0;
+ 	}
+ 	if (a810_mode == 9) {
+-		printf("SWEET A810: GMU running at HFI ready (no startup messages in mode 9)\n");
++		A810_LOG("SWEET A810: GMU running at HFI ready (no startup messages in mode 9)\n");
+ 	}
+ 	return 1;
+ }
+@@ -667,25 +706,28 @@ a810_stage9(void)
  /* ---- Stage 11: GX on (gpuGx), through the cold start's MMIO adapter; no GPU-block writes ---- */
  static struct gpb_gx a810_gx;
  
@@ -148,7 +461,30 @@ index ed65464..014ce93 100644
  }
  static int
  a810_hfi_wait_once(void *cookie)
-@@ -731,6 +759,766 @@ a810_stage11(void)
+@@ -711,14 +753,14 @@ a810_stage11(void)
+ 	unsigned level = 6, bw = 0;
+ 	PE_parse_boot_argn("sweeta810level", &level, sizeof(level));
+ 	const unsigned perf = ShengGmuPerfVote(level, &bw);
+-	printf("SWEET A810: next: GX: HFI vote perf %u bw %u (%llu kHz, sweeta810level=%u), then OOB GPU_SET\n", perf, bw,
++	A810_LOG("SWEET A810: next: GX: HFI vote perf %u bw %u (%llu kHz, sweeta810level=%u), then OOB GPU_SET\n", perf, bw,
+ 	    sweet_a810_gpu_level_hz(perf) / 1000, level);
+ 	const struct gpb_gx_io io = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
+ 	struct gpb_gx *x = &a810_gx;
+ 	gpb_gx_on(&io, perf, bw, x);
+ 	uint32_t gdscr = 0;
+ 	a810_read32(NULL, GPB_WIN_GPUCC, GPB_CC_GX_GDSCR, &gdscr);
+-	printf("SWEET A810: stage 11 gx %s step %u vote %u fw %#x oob %u info %#x pwr_clk %#x>%#x later %#x rbbm %#x gfx %#x "
++	A810_LOG("SWEET A810: stage 11 gx %s step %u vote %u fw %#x oob %u info %#x pwr_clk %#x>%#x later %#x rbbm %#x gfx %#x "
+ 	    "br %#x gbif_halt %#x gx_gdscr %#x writes %u\n", x->failed < 5 ? fail[x->failed] : "?", x->step, x->vote_status,
+ 	    x->fw_error, x->oob_polls, x->info_after, x->gx_before, x->gx_after, x->gx_later, x->rbbm, x->gfx, x->gfx_br,
+ 	    x->gbif_halt, gdscr, x->writes);
+@@ -726,11 +768,771 @@ a810_stage11(void)
+ 		a810_gmu_reset("GX on failed");
+ 		return 0;
+ 	}
+-	printf("SWEET A810: GPU at %llu MHz (level %u), GX on, RBBM_STATUS %#x\n", sweet_a810_gpu_level_hz(perf) / 1000000,
++	A810_LOG("SWEET A810: GPU at %llu MHz (level %u), GX on, RBBM_STATUS %#x\n", sweet_a810_gpu_level_hz(perf) / 1000000,
+ 	    perf, x->rbbm);
  	return 1;
  }
  
@@ -254,9 +590,9 @@ index ed65464..014ce93 100644
 +	}
 +	const volatile uint32_t *m = a810_gbuf[A810_GPU_MEMPTRS].cpu;
 +	a810_gpu_context_faults(f);
-+	printf("SWEET A810: cp %s rptr %#x wptr %#x rbbm %#x int %#x cp_int %#x sqe %#x ap %#x br_fault %#x br_int %#x\n", when,
++	A810_LOG("SWEET A810: cp %s rptr %#x wptr %#x rbbm %#x int %#x cp_int %#x sqe %#x ap %#x br_fault %#x br_int %#x\n", when,
 +	    v[0], v[1], v[2], v[3], v[4], v[5], v[6], fault, status);
-+	printf("SWEET A810: cp %s memptrs %#x %#x %#x %#x smmu fsr %#x far %#x%08x fsynr0 %#x actlr %#x wptr writes %u "
++	A810_LOG("SWEET A810: cp %s memptrs %#x %#x %#x %#x smmu fsr %#x far %#x%08x fsynr0 %#x actlr %#x wptr writes %u "
 +	    "retries %u dropped %u fence %#x\n", when, m ? m[0] : 0, m ? m[1] : 0, m ? m[2] : 0, m ? m[3] : 0, f[0], f[2], f[1],
 +	    f[3], f[4], a810_wptr_writes, a810_wptr_retries, a810_wptr_dropped, a810_wptr_fence);
 +}
@@ -265,14 +601,14 @@ index ed65464..014ce93 100644
 +static void
 +a810_fail(unsigned stage, const char *why)
 +{
-+	printf("SWEET A810: stage %u failed: %s\n", stage, why);
++	A810_LOG("SWEET A810: stage %u failed: %s\n", stage, why);
 +	if (a810_cp_started) {
 +		ShengGmuIo *io = &a810_cold.io;
 +		uint32_t v = ~0u;
 +		io->write32(io->cookie, ShengGmuGpu, (size_t)A810_CP_SQE_CNTL * 4, 0);
 +		io->barrier(io->cookie);
 +		io->read32(io->cookie, ShengGmuGpu, (size_t)A810_CP_SQE_CNTL * 4, &v);
-+		printf("SWEET A810: CP stopped: CP_SQE_CNTL %#x\n", v);
++		A810_LOG("SWEET A810: CP stopped: CP_SQE_CNTL %#x\n", v);
 +		a810_cp_started = 0;
 +	}
 +	a810_ready = 0;
@@ -302,7 +638,7 @@ index ed65464..014ce93 100644
 +a810_gpuctx_progress(uint32_t step)
 +{
 +	static const char *const names[] = {"-", "allocate", "prepare", "program", "attach", "observe", "map", "ready"};
-+	printf("SWEET A810: gpuctx step %u %s\n", step, step < 8 ? names[step] : "?");
++	A810_LOG("SWEET A810: gpuctx step %u %s\n", step, step < 8 ? names[step] : "?");
 +}
 +
 +static int
@@ -310,9 +646,9 @@ index ed65464..014ce93 100644
 +{
 +	const struct gpb_gx_io gio = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
 +	struct gpb_survey *v = &a810_survey;
-+	printf("SWEET A810: next: survey: CX_MISC SW fuse, then CP and RBBM registers\n");
++	A810_LOG("SWEET A810: next: survey: CX_MISC SW fuse, then CP and RBBM registers\n");
 +	gpb_gpu_survey(&gio, v);
-+	printf("SWEET A810: stage 12 survey done %d fuse %#x freq %#x rbbm %#x int %#x fuse_int %#x halt %#x/%#x tsb %#x "
++	A810_LOG("SWEET A810: stage 12 survey done %d fuse %#x freq %#x rbbm %#x int %#x fuse_int %#x halt %#x/%#x tsb %#x "
 +	    "sqe cntl %#x base %#x%08x rb %#x rptr %#x wptr %#x aperture %#x cp_int %#x\n", v->done, v->fuse, v->freq_limit,
 +	    v->gpu[0], v->gpu[1], v->gpu[2], v->gpu[3], v->gpu[4], v->gpu[5], v->gpu[6], v->gpu[8], v->gpu[7], v->gpu[9],
 +	    v->gpu[10], v->gpu[11], v->gpu[12], v->gpu[13]);
@@ -329,10 +665,10 @@ index ed65464..014ce93 100644
 +	uint32_t actlr = a810_smmu_read(a810_cb0 + GPB_SMMU_CB_ACTLR);
 +	*(volatile uint32_t *)(a810_smmu_va + a810_cb0 + GPB_SMMU_CB_ACTLR) = GPB_GPU_ACTLR;
 +	__asm__ volatile ("dsb sy" ::: "memory");
-+	printf("SWEET A810: gpuctx actlr %#x -> %#x\n", actlr, a810_smmu_read(a810_cb0 + GPB_SMMU_CB_ACTLR));
++	A810_LOG("SWEET A810: gpuctx actlr %#x -> %#x\n", actlr, a810_smmu_read(a810_cb0 + GPB_SMMU_CB_ACTLR));
 +
 +	/* The GPU pool: outside XNU's window, reserved by the firmware; 64 MiB of it mapped write-combined and checked. */
-+	printf("SWEET A810: next: GPU pool %#llx, mapping and checking %llu MiB\n", GPB_GPU_POOL_BASE, A810_GPU_POOL_MAPPED >> 20);
++	A810_LOG("SWEET A810: next: GPU pool %#llx, mapping and checking %llu MiB\n", GPB_GPU_POOL_BASE, A810_GPU_POOL_MAPPED >> 20);
 +	a810_gpool_va = ml_io_map_wcomb(GPB_GPU_POOL_BASE, A810_GPU_POOL_MAPPED);
 +	if (!a810_gpool_va) {
 +		a810_fail(12, "GPU pool map failed");
@@ -341,7 +677,7 @@ index ed65464..014ce93 100644
 +	struct gpb_pool_result pool = {0};
 +	gpb_pool_test((volatile uint64_t *)a810_gpool_va, A810_GPU_POOL_MAPPED, &pool);
 +	__asm__ volatile ("dsb sy" ::: "memory");
-+	printf("SWEET A810: GPU pool %llu words, pattern bad %llu, zero bad %llu, first bad %#llx\n", pool.words,
++	A810_LOG("SWEET A810: GPU pool %llu words, pattern bad %llu, zero bad %llu, first bad %#llx\n", pool.words,
 +	    pool.pattern_bad, pool.zero_bad, pool.first_bad);
 +	if (pool.words != A810_GPU_POOL_MAPPED / 8 || pool.pattern_bad || pool.zero_bad) {
 +		a810_fail(12, "GPU pool round trip failed");
@@ -350,11 +686,11 @@ index ed65464..014ce93 100644
 +
 +	/* bank 0 (arm-smmu-qcom gives the GPU bank 0), ASID 2, the DT's SID 0 alone on SMR slot 0 (the hypervisor aborts an
 +	 * SMR write for SID 1 and the secure SID 2). Stage 5's GMU context keeps bank 1 and slot 2. */
-+	printf("SWEET A810: next: GPU SMMU context bank 0 asid 2, sid 0 on slot 0\n");
++	A810_LOG("SWEET A810: next: GPU SMMU context bank 0 asid 2, sid 0 on slot 0\n");
 +	struct a810_gmu_context_report q;
 +	int status = a810_gpu_context_bringup((volatile uint8_t *)a810_smmu_va, GPB_SMMU_WINDOW, GPB_GPU_POOL_BASE,
 +	    (volatile uint8_t *)a810_gpool_va, A810_GPU_POOL_MAPPED, 0, 2, 0, 0, a810_gpuctx_progress, &q);
-+	printf("SWEET A810: stage 12 gpuctx %s step %u: oas %u program %s p%u w%u route %s p%u w%u v%u map %s leaves %u "
++	A810_LOG("SWEET A810: stage 12 gpuctx %s step %u: oas %u program %s p%u w%u route %s p%u w%u v%u map %s leaves %u "
 +	    "mismatch %#x ttbr0 %#llx sctlr %#x cbar %#x smr %#x s2cr %#x gfsr %#x fsr %#x\n", a810_smmu_status_text(q.status),
 +	    q.step, q.output_bits, a810_smmu_status_text(q.program_status), q.program_phase, q.program_writes,
 +	    a810_smmu_status_text(q.route_status), q.route_phase, q.route_writes, q.routes_verified,
@@ -364,7 +700,7 @@ index ed65464..014ce93 100644
 +		return 0;
 +	}
 +	a810_gpool_used = (a810_gpool_used + 0xfffULL) & ~0xfffULL;
-+	printf("SWEET A810: gpuctx sqe %#llx+%#llx@%#llx ring %#llx@%#llx memptrs %#llx@%#llx (pool used %#llx)\n",
++	A810_LOG("SWEET A810: gpuctx sqe %#llx+%#llx@%#llx ring %#llx@%#llx memptrs %#llx@%#llx (pool used %#llx)\n",
 +	    a810_gbuf[0].physical, a810_gbuf[0].bytes, a810_gbuf[0].iova, a810_gbuf[1].physical, a810_gbuf[1].iova,
 +	    a810_gbuf[2].physical, a810_gbuf[2].iova, a810_gpool_used);
 +
@@ -372,7 +708,7 @@ index ed65464..014ce93 100644
 +	size_t sqe_bytes = 0;
 +	const uint8_t *sqe = a810_adt_blob("sqe-firmware", &sqe_bytes);
 +	if (!sqe || sqe_bytes < 8 || (sqe_bytes & 3) || sqe_bytes - 4 > a810_gbuf[A810_GPU_SQE].bytes) {
-+		printf("SWEET A810: sqe-firmware %zu bytes\n", sqe_bytes);
++		A810_LOG("SWEET A810: sqe-firmware %zu bytes\n", sqe_bytes);
 +		a810_fail(12, "no usable sqe-firmware in the ADT (/sweet-gpu)");
 +		return 0;
 +	}
@@ -387,7 +723,7 @@ index ed65464..014ce93 100644
 +	}
 +	uint8_t digest[32];
 +	a810_sha256(sqe, sqe_bytes, digest);
-+	printf("SWEET A810: stage 12 sqe copied %zu bytes (sha256 %02x%02x%02x%02x...), %zu words differ, words %#x %#x %#x\n",
++	A810_LOG("SWEET A810: stage 12 sqe copied %zu bytes (sha256 %02x%02x%02x%02x...), %zu words differ, words %#x %#x %#x\n",
 +	    sqe_bytes - 4, digest[0], digest[1], digest[2], digest[3], bad, dst[0], dst[1], dst[2]);
 +	if (bad) {
 +		a810_fail(12, "SQE copy did not read back");
@@ -400,16 +736,16 @@ index ed65464..014ce93 100644
 +static int
 +a810_stage13(void)
 +{
-+	printf("SWEET A810: next: hw_init: a8xx register writes up to the SQE base\n");
++	A810_LOG("SWEET A810: next: hw_init: a8xx register writes up to the SQE base\n");
 +	a810_gpu_writes = 1;
 +	const struct gpb_gx_io gio = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
 +	struct gpb_hw *h = &a810_hw;
 +	gpb_hw_init(&gio, h);
-+	printf("SWEET A810: stage 13 hw_init %s step %u writes %u aperture %u protect %u nonctxt %u mismatches %u halt %#x/%#x "
++	A810_LOG("SWEET A810: stage 13 hw_init %s step %u writes %u aperture %u protect %u nonctxt %u mismatches %u halt %#x/%#x "
 +	    "rbbm %#x int %#x cp_int %#x xoclk0 %#x\n", h->failed ? "io" : "ok", h->step, h->writes, h->aperture_writes,
 +	    h->protect_writes, h->nonctxt_writes, h->mismatches, h->gbif_halt, h->rbbm_gbif_halt, h->rbbm, h->int_status,
 +	    h->cp_global, h->xoclk0);
-+	printf("SWEET A810: hw_init check %#x %#x %#x %#x %#x %#x %#x %#x\n", h->check[0], h->check[1], h->check[2], h->check[3],
++	A810_LOG("SWEET A810: hw_init check %#x %#x %#x %#x %#x %#x %#x %#x\n", h->check[0], h->check[1], h->check[2], h->check[3],
 +	    h->check[4], h->check[5], h->check[6], h->check[7]);
 +	if (h->failed || h->step != 9) {
 +		a810_fail(13, "hw_init did not finish");
@@ -448,7 +784,7 @@ index ed65464..014ce93 100644
 +a810_stage14(void)
 +{
 +	const uint64_t sqe = a810_gbuf[A810_GPU_SQE].iova, bv_rptr = a810_gbuf[A810_GPU_MEMPTRS].iova + 8;   /* rbmemptr(bv_rptr) */
-+	printf("SWEET A810: next: cp: SQE base %#llx, ring %#llx, then SQE_CNTL and CP_ME_INIT\n", sqe,
++	A810_LOG("SWEET A810: next: cp: SQE base %#llx, ring %#llx, then SQE_CNTL and CP_ME_INIT\n", sqe,
 +	    a810_gbuf[A810_GPU_RING].iova);
 +	if (a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE, (uint32_t)sqe) ||
 +	    a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE + 1, (uint32_t)(sqe >> 32))) {
@@ -460,7 +796,7 @@ index ed65464..014ce93 100644
 +	    a810_gbuf[A810_GPU_MEMPTRS].iova);
 +	uint32_t cntl = 0;
 +	a810_reg_read(NULL, A810_CP_RB_CNTL, &cntl);
-+	printf("SWEET A810: cp ring attach %d rb_cntl %#x\n", st, cntl);
++	A810_LOG("SWEET A810: cp ring attach %d rb_cntl %#x\n", st, cntl);
 +	if (st || a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV, (uint32_t)bv_rptr) ||
 +	    a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV + 1, (uint32_t)(bv_rptr >> 32))) {
 +		a810_fail(14, "ring attach");
@@ -477,7 +813,7 @@ index ed65464..014ce93 100644
 +	if (!init) {
 +		wait = a810_ring_wait(&a810_ring, fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, &seen);
 +	}
-+	printf("SWEET A810: stage 14 cp init st %d fence %u %s seen %u\n", init, fence,
++	A810_LOG("SWEET A810: stage 14 cp init st %d fence %u %s seen %u\n", init, fence,
 +	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen);
 +	a810_cp_state("init");
 +	if (init || wait) {
@@ -494,7 +830,7 @@ index ed65464..014ce93 100644
 +	}
 +	const uint32_t word = scratch[0];
 +	const int ok = !wst && !wait && word == 0x5e9a810;
-+	printf("SWEET A810: stage 14 cp write st %d fence %u %s seen %u scratch %#x %s\n", wst, fence,
++	A810_LOG("SWEET A810: stage 14 cp write st %d fence %u %s seen %u scratch %#x %s\n", wst, fence,
 +	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, ok ? "ok" : "miss");
 +	a810_cp_state("write");
 +	if (!ok) {
@@ -503,7 +839,7 @@ index ed65464..014ce93 100644
 +	}
 +	size_t written = 0;
 +	st = a810_pwrup_build(&a810_cp_io, a810_gbuf[A810_GPU_PWRUP].cpu, (size_t)a810_gbuf[A810_GPU_PWRUP].bytes, &written);
-+	printf("SWEET A810: cp pwrup st %d bytes %zu\n", st, written);
++	A810_LOG("SWEET A810: cp pwrup st %d bytes %zu\n", st, written);
 +	if (st) {
 +		a810_fail(14, "power-up list");
 +		return 0;
@@ -536,7 +872,7 @@ index ed65464..014ce93 100644
 +static struct a810_scm_reply
 +a810_scm(const char *what, uint32_t svc, uint32_t cmd, uint32_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2)
 +{
-+	printf("SWEET A810: zap scm %s (%#x %#x %#llx %#llx %#llx)\n", what, gpb_scm_fn(svc, cmd), arginfo, a0, a1, a2);
++	A810_LOG("SWEET A810: zap scm %s (%#x %#x %#llx %#llx %#llx)\n", what, gpb_scm_fn(svc, cmd), arginfo, a0, a1, a2);
 +	uint64_t r[8] = {gpb_scm_fn(svc, cmd), arginfo, a0, a1, a2, 0, 0, 0};
 +	struct a810_scm_reply out = {0, 0, 0};
 +	for (;;) {
@@ -551,7 +887,7 @@ index ed65464..014ce93 100644
 +		r[0] = GPB_SCM_INTERRUPTED;
 +		r[6] = x[6];
 +	}
-+	printf("SWEET A810: zap scm %s -> status %#llx value %#llx again %u\n", what, out.status, out.value, out.again);
++	A810_LOG("SWEET A810: zap scm %s -> status %#llx value %#llx again %u\n", what, out.status, out.value, out.again);
 +	return out;
 +}
 +
@@ -569,7 +905,7 @@ index ed65464..014ce93 100644
 +		gpb_mdt_metadata(img, m, (uint8_t *)kva);
 +		sweet_dma_sync_va((const void *)kva, PAGE_SIZE);
 +		*pa = ptoa_64(pn);
-+		printf("SWEET A810: zap metadata page from kmem_alloc_contig at %#llx\n", *pa);
++		A810_LOG("SWEET A810: zap metadata page from kmem_alloc_contig at %#llx\n", *pa);
 +		return 0;
 +	}
 +	uint64_t off = (a810_gmu_context_pool_used() + 0xfffULL) & ~0xfffULL;
@@ -587,7 +923,7 @@ index ed65464..014ce93 100644
 +	}
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +	*pa = GPB_GMU_POOL_BASE + off;
-+	printf("SWEET A810: zap metadata page from the GMU pool's spare space at %#llx (kmem_alloc_contig %d, pn %#x)\n", *pa,
++	A810_LOG("SWEET A810: zap metadata page from the GMU pool's spare space at %#llx (kmem_alloc_contig %d, pn %#x)\n", *pa,
 +	    kr, pn);
 +	return 0;
 +}
@@ -597,7 +933,7 @@ index ed65464..014ce93 100644
 +{
 +	uint32_t trust = 0;
 +	a810_reg_read(NULL, A810_RBBM_SECVID_TRUST_CNTL, &trust);
-+	printf("SWEET A810: next: zap: PAS %u into %#llx+%#x, then CP_SET_SECURE_MODE 0; trust_cntl %#x\n", GPB_ZAP_PAS,
++	A810_LOG("SWEET A810: next: zap: PAS %u into %#llx+%#x, then CP_SET_SECURE_MODE 0; trust_cntl %#x\n", GPB_ZAP_PAS,
 +	    GPB_ZAP_REGION, GPB_ZAP_REGION_BYTES, trust);
 +	size_t zap_bytes = 0;
 +	const uint8_t *zap = a810_adt_blob("zap-mbn", &zap_bytes);
@@ -607,7 +943,7 @@ index ed65464..014ce93 100644
 +	}
 +	struct gpb_mdt m;
 +	unsigned rule = gpb_mdt_parse(zap, (uint32_t)zap_bytes, GPB_ZAP_REGION_BYTES, &m);
-+	printf("SWEET A810: zap mbn %zu bytes rule %u header %#x hash %#x+%#x meta %#x loads %u reloc %u span %#x-%#x\n",
++	A810_LOG("SWEET A810: zap mbn %zu bytes rule %u header %#x hash %#x+%#x meta %#x loads %u reloc %u span %#x-%#x\n",
 +	    zap_bytes, rule, m.header_bytes, m.hash_offset, m.hash_bytes, m.meta_bytes, m.loads, m.relocatable, m.min_addr,
 +	    m.max_addr);
 +	if (rule || m.meta_bytes > 0x1000) {
@@ -641,7 +977,7 @@ index ed65464..014ce93 100644
 +		a810_fail(15, "mem_setup");
 +		return 0;
 +	}
-+	printf("SWEET A810: zap writing %#x bytes into the region\n", m.max_addr - m.min_addr);
++	A810_LOG("SWEET A810: zap writing %#x bytes into the region\n", m.max_addr - m.min_addr);
 +	vm_offset_t region = ml_io_map_wcomb(GPB_ZAP_REGION, GPB_ZAP_REGION_BYTES);
 +	if (!region) {
 +		a810_fail(15, "zap region map failed");
@@ -668,7 +1004,7 @@ index ed65464..014ce93 100644
 +	uint32_t after = 0;
 +	a810_reg_read(NULL, A810_RBBM_SECVID_TRUST_CNTL, &after);
 +	const int ok = !st && !wait && word == 0x05ec0ff1;
-+	printf("SWEET A810: stage 15 zap secure off st %d fence %u %s seen %u scratch %#x trust_cntl %#x -> %#x %s\n", st, fence,
++	A810_LOG("SWEET A810: stage 15 zap secure off st %d fence %u %s seen %u scratch %#x trust_cntl %#x -> %#x %s\n", st, fence,
 +	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, trust, after, ok ? "ok" : "miss");
 +	a810_cp_state("zap");
 +	if (!ok) {
@@ -711,7 +1047,7 @@ index ed65464..014ce93 100644
 +	uint32_t fence = 0, seen = 0;
 +	int st = 0, wait = -1;
 +	uint64_t pa = 0;
-+	printf("SWEET A810: next: ib: CP_INDIRECT_BUFFER at %#llx with one CP_MEM_WRITE into scratch+8\n", GPB_IB_IOVA);
++	A810_LOG("SWEET A810: next: ib: CP_INDIRECT_BUFFER at %#llx with one CP_MEM_WRITE into scratch+8\n", GPB_IB_IOVA);
 +	volatile uint32_t *ib = a810_gpool_take(0x1000, &pa);
 +	const uint64_t at = a810_gbuf[A810_GPU_SCRATCH].iova + 8;
 +	uint32_t header = 0;
@@ -726,7 +1062,7 @@ index ed65464..014ce93 100644
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +	int mst = a810_gpu_map(GPB_IB_IOVA, pa, 0x1000, A810_GPU_PROT_READ);
 +	if (mst) {
-+		printf("SWEET A810: ib map %s\n", a810_smmu_status_text((uint32_t)mst));
++		A810_LOG("SWEET A810: ib map %s\n", a810_smmu_status_text((uint32_t)mst));
 +		a810_fail(16, "IB map");
 +		return 0;
 +	}
@@ -736,7 +1072,7 @@ index ed65464..014ce93 100644
 +	a810_ib(GPB_IB_IOVA, 4, &fence, &seen, &st, &wait);
 +	uint32_t word = scratch[2];
 +	int ok = !st && !wait && word == 0x1b810014;
-+	printf("SWEET A810: stage 16 ib st %d fence %u %s seen %u scratch %#x %s\n", st, fence,
++	A810_LOG("SWEET A810: stage 16 ib st %d fence %u %s seen %u scratch %#x %s\n", st, fence,
 +	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, ok ? "ok" : "miss");
 +	a810_cp_state("ib");
 +	if (!ok) {
@@ -749,7 +1085,7 @@ index ed65464..014ce93 100644
 +	uint64_t fb = A810_FB_PA;
 +	uint32_t width = A810_FB_WIDTH, height = A810_FB_HEIGHT, stride = A810_FB_STRIDE;
 +	if (PE_current_console(&video) == 0) {
-+		printf("SWEET A810: bar: console %#lx %lux%lu row %lu depth %lu\n", video.v_baseAddr, video.v_width,
++		A810_LOG("SWEET A810: bar: console %#lx %lux%lu row %lu depth %lu\n", video.v_baseAddr, video.v_width,
 +		    video.v_height, video.v_rowBytes, video.v_depth);
 +		if (video.v_depth == 32 && video.v_baseAddr == A810_FB_PA && video.v_width >= 3 && video.v_width <= 16381 &&
 +		    video.v_height >= 3 * A810_BAR_ROWS && video.v_rowBytes >= video.v_width * 4) {
@@ -769,7 +1105,7 @@ index ed65464..014ce93 100644
 +	b.offset = first - b.page;
 +	b.ib_dwords = b.rows * (3u + width);
 +	b.ib_bytes = (b.ib_dwords * 4u + 0xfffu) & ~0xfffu;
-+	printf("SWEET A810: bar: fb %#llx %ux%u row %u; rows %u-%u span %#llx+%#llx at %#llx, ib %u dwords\n", fb, width, height,
++	A810_LOG("SWEET A810: bar: fb %#llx %ux%u row %u; rows %u-%u span %#llx+%#llx at %#llx, ib %u dwords\n", fb, width, height,
 +	    stride, b.y0, b.y0 + b.rows - 1, b.page, b.bytes, b.offset, b.ib_dwords);
 +	if (b.y0 + b.rows > height || b.bytes > GPB_FB_MAX || b.ib_bytes > GPB_BAR_IB_MAX) {
 +		a810_fail(16, "bar plan");
@@ -777,7 +1113,7 @@ index ed65464..014ce93 100644
 +	}
 +	mst = a810_gpu_map(GPB_FB_IOVA, b.page, b.bytes, A810_GPU_PROT_READ | A810_GPU_PROT_WRITE);
 +	if (mst) {
-+		printf("SWEET A810: bar fb map %s\n", a810_smmu_status_text((uint32_t)mst));
++		A810_LOG("SWEET A810: bar fb map %s\n", a810_smmu_status_text((uint32_t)mst));
 +		a810_fail(16, "framebuffer map");
 +		return 0;
 +	}
@@ -800,11 +1136,11 @@ index ed65464..014ce93 100644
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +	mst = a810_gpu_map(GPB_BAR_IB_IOVA, pa, b.ib_bytes, A810_GPU_PROT_READ);
 +	if (mst) {
-+		printf("SWEET A810: bar ib map %s\n", a810_smmu_status_text((uint32_t)mst));
++		A810_LOG("SWEET A810: bar ib map %s\n", a810_smmu_status_text((uint32_t)mst));
 +		a810_fail(16, "bar IB map");
 +		return 0;
 +	}
-+	printf("SWEET A810: next: bar: drawing once from the IB at %#llx\n", GPB_BAR_IB_IOVA);
++	A810_LOG("SWEET A810: next: bar: drawing once from the IB at %#llx\n", GPB_BAR_IB_IOVA);
 +	a810_ib(GPB_BAR_IB_IOVA, b.ib_dwords, &fence, &seen, &st, &wait);
 +	uint32_t px[3] = {0, 0, 0};
 +	vm_offset_t view = ml_io_map_wcomb(b.page, b.bytes);
@@ -816,7 +1152,7 @@ index ed65464..014ce93 100644
 +	}
 +	ok = !st && !wait;
 +	const int same = px[0] == 0x00ff0000u && px[1] == 0x0000ff00u && px[2] == 0x000000ffu;
-+	printf("SWEET A810: stage 16 bar st %d fence %u %s seen %u pixels %#x %#x %#x %s\n", st, fence,
++	A810_LOG("SWEET A810: stage 16 bar st %d fence %u %s seen %u pixels %#x %#x %#x %s\n", st, fence,
 +	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, px[0], px[1], px[2], ok && same ? "ok" : "miss");
 +	a810_cp_state("bar");
 +	if (!ok) {
@@ -825,7 +1161,7 @@ index ed65464..014ce93 100644
 +	}
 +	a810_ring_request_reset(&a810_ring);   /* the first user submission carries the context entry */
 +	a810_ready = 1;
-+	printf("SWEET A810: the GPU is up (sweet_a810_ready); the band stays for 10 s unless the console scrolls over it\n");
++	A810_LOG("SWEET A810: the GPU is up (sweet_a810_ready); the band stays for 10 s unless the console scrolls over it\n");
 +	delay_for_interval(10, NSEC_PER_SEC);
 +	return 1;
 +}
@@ -915,28 +1251,100 @@ index ed65464..014ce93 100644
  static void
  a810_thread(void *arg, wait_result_t wr)
  {
-@@ -784,6 +1572,21 @@ a810_thread(void *arg, wait_result_t wr)
+@@ -748,43 +1550,70 @@ a810_thread(void *arg, wait_result_t wr)
+ 			have |= 1u << w;
+ 		}
+ 	}
+-	printf("SWEET A810: sweeta810=%u, windows mapped %#x\n", mode, have);
++	A810_LOG("SWEET A810: sweeta810=%u, windows mapped %#x\n", mode, have);
++	sweet_log_sync();
+ 	gpb_run(&a810_io, mode > 3 ? 3 : mode, have, &r);
+ 	a810_report(&r);
+ 	if (mode >= 4) {
+-		printf("SWEET A810: next: GMU pool round trip at %#llx (%llu MiB)\n", GPB_GMU_POOL_BASE, GPB_GMU_POOL_BYTES >> 20);
++		A810_LOG("SWEET A810: next: GMU pool round trip at %#llx (%llu MiB)\n", GPB_GMU_POOL_BASE, GPB_GMU_POOL_BYTES >> 20);
+ 		a810_pool_va = ml_io_map_wcomb(GPB_GMU_POOL_BASE, GPB_GMU_POOL_BYTES);
+ 		if (a810_pool_va == 0) {
+-			printf("SWEET A810: GMU pool map failed\n");
++			A810_LOG("SWEET A810: GMU pool map failed\n");
+ 		} else {
+ 			gpb_pool_test((volatile uint64_t *)a810_pool_va, GPB_GMU_POOL_BYTES, &pool);
+ 			__asm__ volatile ("dsb sy" ::: "memory");
+-			printf("SWEET A810: GMU pool %llu words, pattern bad %llu, zero bad %llu, first bad %#llx\n",
++			A810_LOG("SWEET A810: GMU pool %llu words, pattern bad %llu, zero bad %llu, first bad %#llx\n",
+ 			    pool.words, pool.pattern_bad, pool.zero_bad, pool.first_bad);
+ 		}
+ 		unsigned gate = gpb_gmu_context_gate(&r, a810_pool_va ? &pool : NULL);
+-		printf("SWEET A810: stage 4 GMU SMMU context gate (mode 5): %u (%s)\n", gate, gpb_gmu_gate_text(gate));
++		A810_LOG("SWEET A810: stage 4 GMU SMMU context gate (mode 5): %u (%s)\n", gate, gpb_gmu_gate_text(gate));
+ 	}
+ 	int ok = 1;
+ 	if (ok && mode >= 5) {
++		A810_LOG("SWEET A810: stage 5 starting\n");
+ 		ok = a810_stage5(&r, &pool);
+ 	}
+ 	if (ok && mode >= 6) {
++		A810_LOG("SWEET A810: stage 6 starting\n");
+ 		ok = a810_stage6(&r);
+ 	}
+ 	if (ok && mode >= 7) {
++		A810_LOG("SWEET A810: stage 7 starting\n");
+ 		ok = a810_stage7(&r);
+ 	}
+ 	if (ok && mode >= 8) {
++		A810_LOG("SWEET A810: stage 8 starting\n");
+ 		ok = a810_stage8(&r);
+ 	}
+ 	if (ok && mode >= 9) {
++		A810_LOG("SWEET A810: stage 9 starting\n");
+ 		ok = a810_stage9();
+ 	}
  	if (ok && mode >= 11) {
++		A810_LOG("SWEET A810: stage 11 starting\n");
  		ok = a810_stage11();
  	}
+-	printf("SWEET A810: done (mode %u, %s)\n", mode, ok ? "every stage passed" : "stopped at a gate");
 +	if (ok && mode >= 12) {
++		A810_LOG("SWEET A810: stage 12 starting\n");
 +		ok = a810_stage12(&r);
 +	}
 +	if (ok && mode >= 13) {
++		A810_LOG("SWEET A810: stage 13 starting\n");
 +		ok = a810_stage13();
 +	}
 +	if (ok && mode >= 14) {
++		A810_LOG("SWEET A810: stage 14 starting\n");
 +		ok = a810_stage14();
 +	}
 +	if (ok && mode >= 15) {
++		A810_LOG("SWEET A810: stage 15 starting\n");
 +		ok = a810_stage15();
 +	}
 +	if (ok && mode >= 16) {
++		A810_LOG("SWEET A810: stage 16 starting\n");
 +		ok = a810_stage16();
 +	}
- 	printf("SWEET A810: done (mode %u, %s)\n", mode, ok ? "every stage passed" : "stopped at a gate");
++	A810_LOG("SWEET A810: done (mode %u, %s)\n", mode, ok ? "every stage passed" : "stopped at a gate");
  	thread_terminate(current_thread());
  }
+ 
+@@ -798,14 +1627,14 @@ sweet_a810_probe(void)
+ 		return;
+ 	}
+ 	if (mode > A810_MAX_MODE) {
+-		printf("SWEET A810: sweeta810=%u: only modes 1-%u exist in this kernel, running %u\n", mode, A810_MAX_MODE,
++		A810_LOG("SWEET A810: sweeta810=%u: only modes 1-%u exist in this kernel, running %u\n", mode, A810_MAX_MODE,
+ 		    A810_MAX_MODE);
+ 		mode = A810_MAX_MODE;
+ 	}
+ 	if (kernel_thread_start(a810_thread, (void *)(uintptr_t)mode, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	} else {
+-		printf("SWEET A810: kernel_thread_start failed\n");
++		A810_LOG("SWEET A810: kernel_thread_start failed\n");
+ 	}
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
 diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
 new file mode 100644
 index 0000000..8960071

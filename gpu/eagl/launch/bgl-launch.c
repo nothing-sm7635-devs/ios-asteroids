@@ -234,7 +234,10 @@ static int metal_mode(void)
 	int alive = 1;
 	if (stat(BB_ARM, &st) != 0 || stat(BB_OFF, &st) == 0)
 		return 0;
-	if (!readable(BB_LIBDIR, "bgmtl-inject.dylib") || !readable(BB_LIBDIR, "libbgair.dylib") || !readable(BB_LIBDIR, "libdrm.2.dylib"))
+	/* the runtime is libchlorophyll.dylib since Turnip (Chlorophyll turnip/build-metal.sh), libbgair.dylib on the Gallium build */
+	if (!readable(BB_LIBDIR, "bgmtl-inject.dylib") ||
+	    (!readable(BB_LIBDIR, "libchlorophyll.dylib") && !readable(BB_LIBDIR, "libbgair.dylib")) ||
+	    !readable(BB_LIBDIR, "libdrm.2.dylib"))
 		return 0;
 	boot_uuid(boot, sizeof boot);
 	FILE *f = fopen(BB_STATE, "r");

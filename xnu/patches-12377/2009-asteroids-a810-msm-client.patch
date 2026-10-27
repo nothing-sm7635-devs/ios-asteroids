@@ -315,10 +315,10 @@ index 8960071..9df123e 100644
  #endif
 diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
 new file mode 100644
-index 0000000..546a635
+index 0000000..4adbbfa
 --- /dev/null
 +++ b/bsd/dev/sweet_a810_msm.c
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,374 @@
 +/*
 + * Nothing Phone (3a) "asteroids": the Adreno 810 behind the msm user client (iokit/Kernel/arm/SweetAdreno.cpp).
 + *
@@ -338,6 +338,7 @@ index 0000000..546a635
 +#include <sys/param.h>
 +#include <sys/systm.h>
 +#include <sys/errno.h>
++#include <kern/clock.h>
 +#include <kern/locks.h>
 +#include <kern/kalloc.h>
 +#include "sweet_board.h"

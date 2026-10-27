@@ -135,6 +135,17 @@
   * Chlorophyll on Linux (user asked; in progress, /home/saalim/os/ios/chl-work): clang-18 -target arm64e-apple-ios18.0
     + Theos ld64 (~/theos/toolchain/linux/iphone/bin/ld via --ld-path) + ~/theos/sdks/iPhoneOS16.5.sdk links an ObjC
     arm64e dylib; ld warns "incompatible arm64e ABI compiler" (clang 18 emits subtype caps 0x00, Xcode 0x80).
+    DONE (2026-10-28): asteroids/build-chlorophyll.sh WORK builds on Linux libchlorophyll.dylib (Turnip + AIR, Mesa
+    26.2.5 + Chlorophyll ios26 d3cb665 patches, all six apply), libvulkan_freedreno.dylib, the libdrm stand-in,
+    bgmtl-inject.dylib and bgl-launch, plain arm64 (the kernel runs userland with PAC keys off and tells dyld
+    ptrauth_disabled=1, which makes dyld accept arm64 in arm64e processes), signed with Theos ldid (pacstrip --sign's
+    downloaded ldid is blocked here). 5541 undefined symbols are Mesa's weak entry points; the rest resolve to libSystem,
+    libc++, libz, libdrm. Fixes needed: ld only when linking (meson -Werror=unused-command-line-argument), llvm-ar +
+    a ranlib wrapper dropping -c, MTLTextureViewDescriptor declared for the 16.5 SDK (ios-sdk-compat.h). Mesa 26.2
+    already lists the A810 (0x44010000). Not run on the phone yet. Install: RENEGADE_CHLOROPHYLL=WORK/out-metal for
+    mkroot-full (root_tweaks18.chlorophyll: libs to /usr/local/lib/bgmtl, bgl-launch for backboardd's job, bgmtl-bb.arm);
+    bgl-launch now accepts libchlorophyll.dylib besides libbgair.dylib. Needs a root rebuild + userdata reflash.
+  * CI 49346fa (2009+2010) failed: sweet_a810_msm.c used delay() without <kern/clock.h>; fixed.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

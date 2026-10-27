@@ -1221,6 +1221,44 @@ def bglrender(root):
         src, BGL_DIR, BGL_LAUNCH, n, 'y' if n == 1 else 'ies'))
 
 
+CHLOROPHYLL_FILES = ('bgmtl-inject.dylib', 'libchlorophyll.dylib', 'libdrm.2.dylib', 'bgl-launch')
+
+
+def chlorophyll(root, src):
+    """Chlorophyll (Metal on Turnip) as backboardd's compositor, installed into the root (asteroids: no USB network, so no live
+    install). SRC holds the four files of CHLOROPHYLL_FILES (Chlorophyll turnip/build-turnip.sh + build-metal.sh and
+    gpu/eagl/launch/bgl-launch.c; the asteroids Linux build: asteroids/build-chlorophyll.sh). The libraries go to
+    /usr/local/lib/bgmtl, bgl-launch to /usr/local/lib/bergamota-gl, backboardd's job starts bgl-launch, and
+    /private/var/tmp/bgmtl-bb.arm arms it. bgl-launch falls back to plain backboardd by itself (no GPU user client, a failed
+    Metal launch this boot, bgmtl-bb.off), so a root with this still boots without the GPU. RENEGADE_CHLOROPHYLL_ARM=0: not armed."""
+    if not all(os.path.isfile(os.path.join(src, f)) for f in CHLOROPHYLL_FILES):
+        print('chlorophyll: %s lacks one of %s: skipped' % (src, ', '.join(CHLOROPHYLL_FILES)))
+        note_skip('chlorophyll', 'files missing in ' + src)
+        return False
+    for d in (BGMTL_LIB_DIR.lstrip('/'), BGL_DIR):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+        os.chown(os.path.join(root, d), 0, 0)
+        os.chmod(os.path.join(root, d), 0o755)
+    for f in CHLOROPHYLL_FILES[:3]:
+        install_file(os.path.join(src, f), os.path.join(root, BGMTL_LIB_DIR.lstrip('/'), f), 0o755)
+    install_file(os.path.join(src, 'bgl-launch'), os.path.join(root, BGL_LAUNCH.lstrip('/')), 0o755)  # last: the job points here
+    lpath = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(lpath)
+    plist = load(lpath)
+    n = 0
+    for job in [j for j in plist['LaunchDaemons'].values() if j.get('Label') == BACKBOARDD_LABEL]:
+        pa = job.get('ProgramArguments')
+        if pa and pa[0] in (BACKBOARDD_PATH, BGL_LAUNCH):
+            pa[0] = BGL_LAUNCH
+            n += 1
+    save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') != '0':
+        write_file(os.path.join(root, 'private/var/tmp/bgmtl-bb.arm'), 'armed by renegade chlorophyll\n')
+    print('chlorophyll: %s installed, backboardd job -> %s (%d entr%s), %s' % (', '.join(CHLOROPHYLL_FILES), BGL_LAUNCH, n,
+          'y' if n == 1 else 'ies', 'not armed' if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') == '0' else 'armed (bgmtl-bb.arm)'))
+    return True
+
+
 def tool_gaps(feats):
     """Features of `feats` (name -> bool) that cannot run because the prebuilt binaries they install are missing
     (always the case on Linux without CI artifacts). Returns {feature: reason} and records each in the skip summary;

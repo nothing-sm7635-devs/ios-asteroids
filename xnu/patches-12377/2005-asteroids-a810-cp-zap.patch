@@ -1,0 +1,2050 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 669fc49..b1058ea 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,7 @@ bsd/dev/sweet_a810.c			standard
+ bsd/dev/sweet_a810_smmu.c		standard
+ bsd/dev/sweet_a810_hfi.c		standard
+ bsd/dev/sweet_a810_gmu.c		standard
++bsd/dev/sweet_a810_cp.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_reboot.c			standard
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index ed65464..33e5407 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1,9 +1,10 @@
+ /*
+- * Nothing Phone (3a) "asteroids": Adreno 810 (gen8_3_0, chip 0x44010000) bring-up, stages 1-11: power, the GMU's SMMU
+- * context and the GMU cold start through GX on.
++ * Nothing Phone (3a) "asteroids": Adreno 810 (gen8_3_0, chip 0x44010000) bring-up, stages 1-16: power, the GMU's SMMU
++ * context, the GMU cold start through GX on, then the GPU's SMMU context, hw_init, the CP, the zap shader and the first
++ * IBs, and the small kernel interface of sweet_a810_api.h on top of them.
+  *
+  * Boot-args (asteroids only; the probe runs 10 s after the root is up, on its own thread):
+- *   sweeta810=N        N = 1..11 (default 0: nothing runs); each mode runs every stage below it
++ *   sweeta810=N        N = 1..16 (default 0: nothing runs); each mode runs every stage below it
+  *   sweeta810level=L   the GPU level stage 11 votes (default 6: 763 MHz on the 3a's bin; clamped to the table)
+  *   sweeta810fwpin=0   stage 9: accept a gen80300_gmu.bin other than the pinned one (default 1: SHA-256, size and the
+  *                      15 block records must match this phone's own file); the block structure is checked either way
+@@ -21,28 +22,46 @@
+  *   9  8, and the GMU firmware (ADT /sweet-gpu "gmu-firmware") loaded, CM3 released, HFI ready awaited
+  *  10  9 as the whole cold start: the HFI startup messages (GPU_PERF table, bandwidth table, core start, start)
+  *  11  10, and GX on: HFI GX_BW_PERF_VOTE at sweeta810level, OOB GPU_SET, then RBBM_STATUS and friends
++ *  12  11, and the survey (SW fuse, CP/RBBM registers), ACTLR 0x32b on bank 0, the GPU pool (0xABFE00000, first 64 MiB
++ *      mapped write-combined and pattern-tested), the GPU's SMMU context there (bank 0, ASID 2, SID 0 on slot 0) with
++ *      the kernel buffers, and the SQE (ADT "sqe-firmware" minus its first dword)
++ *  13  12, and a8xx hw_init's register writes (gpb_hw_init); the GPU block is written from here on
++ *  14  13, and the CP: SQE base, ring, SQE_CNTL 1, CP_THREAD_CONTROL + CP_ME_INIT, a CP_MEM_WRITE of 0x5e9a810 into
++ *      the scratch page, the power-up list
++ *  15  14, and the zap shader (ADT "zap-mbn") through SCM PAS 13 into 0x9ea9a000, then CP_SET_SECURE_MODE 0 and a
++ *      CP_MEM_WRITE of 0x05ec0ff1
++ *  16  15, and a one-packet IB, then a red/green/blue band (white edges) the GPU writes into the framebuffer near the
++ *      top, drawn once and left for 10 s; then sweet_a810_ready() is true
+  * Each stage has rootstockos's gate; the first gate that fails stops the run and says why. After a failure once the GMU
+- * was started, the GMU is put back in reset (CM3_SYSRESET = 1, read back). sCR0 of the GPU SMMU is only ever read.
++ * was started, the CP is stopped (CP_SQE_CNTL 0) if it was started, and the GMU is put back in reset (CM3_SYSRESET = 1,
++ * read back). sCR0 of the GPU SMMU is only ever read.
+  * Every result goes to the kernel log ("SWEET A810:"), one "stage N" line per stage with its key registers.
+  *
+  * The staged sequence is rootstockos UniXNU-asteroids package/GpuPowerProbe.cpp (probeThread and gmuContext,
+  * gmuPrerequisites, gmuClocksOn, gmuState, gmuColdStart, gpuGx; Copyright (c) 2026, UniXNU contributors / rootstockos
+  * contributors, BSD-2-Clause-Patent), ported to C for this kernel; its board facts are package/GpuPowerBoard.h
+- * (sweet_a810_board.h here, unchanged), the register map NativeAdrenoA810HwInit.h (MIT). The SHA-256 below is
++ * (sweet_a810_board.h here, unchanged), the register map NativeAdrenoA810HwInit.h (MIT). Stages 12-16 are
++ * gpuSurvey, gpuHwInit, cpStart, zapStart and barStart of the same file (the bar near the top and drawn once, not two
++ * thirds down every 200 ms), with sweet_a810_cp.c (NativeAdreno's ring, CP init and power-up list, MIT) and
++ * sweet_a810_smmu.c (the GPU's context). The SHA-256 below is
+  * NativeAdreno's NativeAdrenoSha256.cpp (MIT, Copyright (c) 2026 NativeAdreno contributors) in C.
+  * I/O on this kernel: plain 32-bit ldr/str with dsb sy (the phone runs under the Gunyah hypervisor, which aborts other
+  * access forms on emulated blocks), and never memset/bzero on device or pool mappings (DC ZVA aborts there).
+- * The CP (stages 12-16: the GPU's SMMU context, SQE, hw_init, CP start, zap, first IB) comes next.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+ #include <sys/systm.h>
++#include <sys/errno.h>
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+ #include <kern/kalloc.h>
++#include <kern/locks.h>
+ #include <machine/machine_routines.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
++#include <vm/vm_kern_xnu.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include "sweet_board.h"
+@@ -50,6 +69,8 @@
+ #include "sweet_a810_smmu.h"
+ #include "sweet_a810_hfi.h"
+ #include "sweet_a810_gmu.h"
++#include "sweet_a810_cp.h"
++#include "sweet_a810_api.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+@@ -58,7 +79,7 @@ extern kern_return_t thread_terminate(thread_t);
+ void sweet_a810_probe(void);
+ 
+ #define A810_START_DELAY_S      10u
+-#define A810_MAX_MODE           11u
++#define A810_MAX_MODE           16u
+ #define A810_FW_MAX             0x100000u
+ 
+ static unsigned a810_mode;
+@@ -233,6 +254,7 @@ a810_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
+ 
+ /* ---- Stage 5: the GMU's SMMU context (GpuPowerProbe.cpp gmuContext) ---- */
+ static vm_offset_t a810_pool_va;        /* mode 4's write-combined map of the GMU pool; the context keeps using it */
++static vm_offset_t a810_smmu_va;        /* stage 5's map of the whole SMMU; stage 12 builds the GPU's context through it */
+ static int a810_ctx_ready;
+ 
+ static void
+@@ -253,6 +275,7 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
+ 	printf("SWEET A810: next: GMU SMMU context bank %u asid %u slot %u sid %u, mapping the SMMU %#llx + %#llx\n",
+ 	    GPB_GMU_BANK, GPB_GMU_ASID, GPB_GMU_SLOT, GPB_GMU_SID, GPB_SMMU_BASE, GPB_SMMU_WINDOW);
+ 	vm_offset_t smmu = ml_io_map(GPB_SMMU_BASE, GPB_SMMU_WINDOW);   /* lives for the boot: the bank points at the pool */
++	a810_smmu_va = smmu;
+ 	if (smmu == 0) {
+ 		a810_gate_failed(5, "SMMU map failed");
+ 		return 0;
+@@ -667,25 +690,28 @@ a810_stage9(void)
+ /* ---- Stage 11: GX on (gpuGx), through the cold start's MMIO adapter; no GPU-block writes ---- */
+ static struct gpb_gx a810_gx;
+ 
++static int a810_gpu_writes;             /* GpuPowerProbe gGpuWrites: the GPU block is written only from stage 13 (hw_init) */
++
++/* GpuPowerProbe gxRead/gxWrite: the GMU, the GPU block and (read only) CX_MISC through the cold start's adapter. */
+ static int
+ a810_gx_read(void *cookie, unsigned w, uint32_t off, uint32_t *out)
+ {
+ 	ShengGmuIo *io = &a810_cold.io;
+ 	(void)cookie;
+-	if (w != GPB_WIN_GMU && w != GPB_WIN_GPU) {
++	if (w != GPB_WIN_GMU && w != GPB_WIN_GPU && w != GPB_WIN_CX) {
+ 		return 1;
+ 	}
+-	return io->read32(io->cookie, w == GPB_WIN_GMU ? ShengGmuCore : ShengGmuGpu, off, out);
++	return io->read32(io->cookie, w == GPB_WIN_GMU ? ShengGmuCore : w == GPB_WIN_CX ? ShengGmuCxMisc : ShengGmuGpu, off, out);
+ }
+ static int
+ a810_gx_write(void *cookie, unsigned w, uint32_t off, uint32_t value)
+ {
+ 	ShengGmuIo *io = &a810_cold.io;
+ 	(void)cookie;
+-	if (w != GPB_WIN_GMU) {
+-		return 1;                      /* the GPU block is written only from stage 13 (hw_init) */
++	if (w == GPB_WIN_CX || (w != GPB_WIN_GMU && (w != GPB_WIN_GPU || !a810_gpu_writes))) {
++		return 1;
+ 	}
+-	return io->write32(io->cookie, ShengGmuCore, off, value) || io->barrier(io->cookie);
++	return io->write32(io->cookie, w == GPB_WIN_GMU ? ShengGmuCore : ShengGmuGpu, off, value) || io->barrier(io->cookie);
+ }
+ static int
+ a810_hfi_wait_once(void *cookie)
+@@ -731,6 +757,766 @@ a810_stage11(void)
+ 	return 1;
+ }
+ 
++/* ---- Stages 12-16: register access for the CP (GpuPowerProbe ringWrite/ringRead/ringBarrier) ---- */
++static uint32_t a810_wptr_writes, a810_wptr_retries, a810_wptr_dropped, a810_wptr_fence;
++
++static int
++a810_reg_read(void *cookie, uint32_t reg, uint32_t *value)
++{
++	ShengGmuIo *io = &a810_cold.io;
++	(void)cookie;
++	return io->read32(io->cookie, ShengGmuGpu, (size_t)reg * 4, value);
++}
++/* CP_RB_WPTR goes out as Linux's fenced write: GMU_AHB_FENCE_STATUS bit 0 means the GMU's AHB fence dropped it, so it is
++ * written again, up to 200 times 10 us apart. Every other register is a plain write; all need stage 13's permission. */
++static int
++a810_reg_write(void *cookie, uint32_t reg, uint32_t value)
++{
++	ShengGmuIo *io = &a810_cold.io;
++	(void)cookie;
++	if (!a810_gpu_writes) {
++		return 1;
++	}
++	if (reg != A810_CP_RB_WPTR) {
++		return io->write32(io->cookie, ShengGmuGpu, (size_t)reg * 4, value) || io->barrier(io->cookie);
++	}
++	++a810_wptr_writes;
++	for (unsigned tries = 0; tries < 200; ++tries) {
++		if (io->write32(io->cookie, ShengGmuGpu, (size_t)reg * 4, value) || io->barrier(io->cookie) ||
++		    io->read32(io->cookie, ShengGmuCore, GPB_GMU_AHB_FENCE_STATUS, &a810_wptr_fence)) {
++			return 1;
++		}
++		if (!(a810_wptr_fence & 1)) {
++			return 0;
++		}
++		++a810_wptr_retries;
++		delay(10);
++	}
++	++a810_wptr_dropped;
++	return 1;
++}
++static int
++a810_reg_barrier(void *cookie)
++{
++	(void)cookie;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return 0;
++}
++static const struct a810_cp_io a810_cp_io = {NULL, a810_reg_write, a810_reg_read, a810_reg_barrier};
++
++static uint64_t
++a810_now(void)
++{
++	uint64_t us = 0;
++	a810_svc_now_us(NULL, &us);
++	return us;
++}
++static void
++a810_idle(void)
++{
++	delay(20);
++}
++
++static struct gpb_survey a810_survey;
++static struct gpb_hw a810_hw;
++static struct a810_ring a810_ring;
++static struct a810_gmu_payload a810_gbuf[A810_GPU_BUFFERS];
++static uint64_t a810_gpool_used;       /* bytes of the GPU pool's mapped part in use from its base */
++static vm_offset_t a810_gpool_va;
++static int a810_cp_started, a810_ready;
++static uint32_t a810_cb0;              /* the GPU bank's offset in the SMMU */
++static LCK_GRP_DECLARE(a810_lck_grp, "sweet_a810");
++static LCK_MTX_DECLARE(a810_lck, &a810_lck_grp);
++
++#define A810_GPU_POOL_MAPPED    0x4000000ULL    /* the part of the 1 GiB GPU pool this kernel maps and uses: 64 MiB */
++#define A810_FENCE_TIMEOUT_US   200000u
++static const char *const a810_fence_text[] = {"done", "timeout", "poisoned", "argument"};
++
++static uint32_t
++a810_smmu_read(uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(a810_smmu_va + off);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return v;
++}
++
++/* GpuPowerProbe cpState: the CP's pointers and status, BR's fault and interrupt status through the aperture, the
++ * memptrs, the GPU bank's fault registers and the WPTR write statistics. */
++static void
++a810_cp_state(const char *when)
++{
++	uint32_t v[7] = {0}, fault = 0, status = 0, f[5];
++	const uint32_t regs[7] = {A810_CP_RB_RPTR, A810_CP_RB_WPTR, A810_RBBM_STATUS, A810_RBBM_INT_0_STATUS,
++		                  A810_CP_INTERRUPT_STATUS_GLOBAL, A810_CP_SQE_CNTL, A810_CP_APERTURE_CNTL_HOST};
++	for (unsigned i = 0; i < 7; ++i) {
++		a810_reg_read(NULL, regs[i], &v[i]);
++	}
++	if (a810_gpu_writes) {
++		a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, A810_PIPE_BR << A810_CP_APERTURE_CNTL_HOST_PIPEID_SHIFT);
++		a810_reg_read(NULL, A810_CP_HW_FAULT_STATUS_PIPE, &fault);
++		a810_reg_read(NULL, A810_CP_INTERRUPT_STATUS_PIPE, &status);
++		a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, 0);
++	}
++	const volatile uint32_t *m = a810_gbuf[A810_GPU_MEMPTRS].cpu;
++	a810_gpu_context_faults(f);
++	printf("SWEET A810: cp %s rptr %#x wptr %#x rbbm %#x int %#x cp_int %#x sqe %#x ap %#x br_fault %#x br_int %#x\n", when,
++	    v[0], v[1], v[2], v[3], v[4], v[5], v[6], fault, status);
++	printf("SWEET A810: cp %s memptrs %#x %#x %#x %#x smmu fsr %#x far %#x%08x fsynr0 %#x actlr %#x wptr writes %u "
++	    "retries %u dropped %u fence %#x\n", when, m ? m[0] : 0, m ? m[1] : 0, m ? m[2] : 0, m ? m[3] : 0, f[0], f[2], f[1],
++	    f[3], f[4], a810_wptr_writes, a810_wptr_retries, a810_wptr_dropped, a810_wptr_fence);
++}
++
++/* Any failure after the GMU started: the CP stopped first (CP_SQE_CNTL 0) if it was started, then the GMU in reset. */
++static void
++a810_fail(unsigned stage, const char *why)
++{
++	printf("SWEET A810: stage %u failed: %s\n", stage, why);
++	if (a810_cp_started) {
++		ShengGmuIo *io = &a810_cold.io;
++		uint32_t v = ~0u;
++		io->write32(io->cookie, ShengGmuGpu, (size_t)A810_CP_SQE_CNTL * 4, 0);
++		io->barrier(io->cookie);
++		io->read32(io->cookie, ShengGmuGpu, (size_t)A810_CP_SQE_CNTL * 4, &v);
++		printf("SWEET A810: CP stopped: CP_SQE_CNTL %#x\n", v);
++		a810_cp_started = 0;
++	}
++	a810_ready = 0;
++	a810_gmu_reset("stage failed");
++}
++
++/* A page-aligned run of the mapped GPU pool after what is in use; NULL when it does not fit. Never freed. */
++static volatile uint32_t *
++a810_gpool_take(uint64_t bytes, uint64_t *pa)
++{
++	bytes = (bytes + 0xfffULL) & ~0xfffULL;
++	if (a810_gpool_used + bytes > A810_GPU_POOL_MAPPED) {
++		return NULL;
++	}
++	volatile uint32_t *cpu = (volatile uint32_t *)(a810_gpool_va + a810_gpool_used);
++	*pa = GPB_GPU_POOL_BASE + a810_gpool_used;
++	a810_gpool_used += bytes;
++	for (uint64_t i = 0; i < bytes / 4; ++i) {
++		cpu[i] = 0;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return cpu;
++}
++
++/* ---- Stage 12: survey, the GPU's SMMU context, the SQE copy (gpuSurvey) ---- */
++static void
++a810_gpuctx_progress(uint32_t step)
++{
++	static const char *const names[] = {"-", "allocate", "prepare", "program", "attach", "observe", "map", "ready"};
++	printf("SWEET A810: gpuctx step %u %s\n", step, step < 8 ? names[step] : "?");
++}
++
++static int
++a810_stage12(const struct gpb_result *r)
++{
++	const struct gpb_gx_io gio = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
++	struct gpb_survey *v = &a810_survey;
++	printf("SWEET A810: next: survey: CX_MISC SW fuse, then CP and RBBM registers\n");
++	gpb_gpu_survey(&gio, v);
++	printf("SWEET A810: stage 12 survey done %d fuse %#x freq %#x rbbm %#x int %#x fuse_int %#x halt %#x/%#x tsb %#x "
++	    "sqe cntl %#x base %#x%08x rb %#x rptr %#x wptr %#x aperture %#x cp_int %#x\n", v->done, v->fuse, v->freq_limit,
++	    v->gpu[0], v->gpu[1], v->gpu[2], v->gpu[3], v->gpu[4], v->gpu[5], v->gpu[6], v->gpu[8], v->gpu[7], v->gpu[9],
++	    v->gpu[10], v->gpu[11], v->gpu[12], v->gpu[13]);
++	if (!v->done) {
++		a810_fail(12, "survey read failed");
++		return 0;
++	}
++	if (!a810_smmu_va) {
++		a810_fail(12, "no SMMU map");
++		return 0;
++	}
++	/* ACTLR before the bank is programmed and enabled, as arm-smmu-qcom and pandora's level 9 set it. */
++	a810_cb0 = gpb_smmu_cb_offset(r->id1, 0);
++	uint32_t actlr = a810_smmu_read(a810_cb0 + GPB_SMMU_CB_ACTLR);
++	*(volatile uint32_t *)(a810_smmu_va + a810_cb0 + GPB_SMMU_CB_ACTLR) = GPB_GPU_ACTLR;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET A810: gpuctx actlr %#x -> %#x\n", actlr, a810_smmu_read(a810_cb0 + GPB_SMMU_CB_ACTLR));
++
++	/* The GPU pool: outside XNU's window, reserved by the firmware; 64 MiB of it mapped write-combined and checked. */
++	printf("SWEET A810: next: GPU pool %#llx, mapping and checking %llu MiB\n", GPB_GPU_POOL_BASE, A810_GPU_POOL_MAPPED >> 20);
++	a810_gpool_va = ml_io_map_wcomb(GPB_GPU_POOL_BASE, A810_GPU_POOL_MAPPED);
++	if (!a810_gpool_va) {
++		a810_fail(12, "GPU pool map failed");
++		return 0;
++	}
++	struct gpb_pool_result pool = {0};
++	gpb_pool_test((volatile uint64_t *)a810_gpool_va, A810_GPU_POOL_MAPPED, &pool);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET A810: GPU pool %llu words, pattern bad %llu, zero bad %llu, first bad %#llx\n", pool.words,
++	    pool.pattern_bad, pool.zero_bad, pool.first_bad);
++	if (pool.words != A810_GPU_POOL_MAPPED / 8 || pool.pattern_bad || pool.zero_bad) {
++		a810_fail(12, "GPU pool round trip failed");
++		return 0;
++	}
++
++	/* bank 0 (arm-smmu-qcom gives the GPU bank 0), ASID 2, the DT's SID 0 alone on SMR slot 0 (the hypervisor aborts an
++	 * SMR write for SID 1 and the secure SID 2). Stage 5's GMU context keeps bank 1 and slot 2. */
++	printf("SWEET A810: next: GPU SMMU context bank 0 asid 2, sid 0 on slot 0\n");
++	struct a810_gmu_context_report q;
++	int status = a810_gpu_context_bringup((volatile uint8_t *)a810_smmu_va, GPB_SMMU_WINDOW, GPB_GPU_POOL_BASE,
++	    (volatile uint8_t *)a810_gpool_va, A810_GPU_POOL_MAPPED, 0, 2, 0, 0, a810_gpuctx_progress, &q);
++	printf("SWEET A810: stage 12 gpuctx %s step %u: oas %u program %s p%u w%u route %s p%u w%u v%u map %s leaves %u "
++	    "mismatch %#x ttbr0 %#llx sctlr %#x cbar %#x smr %#x s2cr %#x gfsr %#x fsr %#x\n", a810_smmu_status_text(q.status),
++	    q.step, q.output_bits, a810_smmu_status_text(q.program_status), q.program_phase, q.program_writes,
++	    a810_smmu_status_text(q.route_status), q.route_phase, q.route_writes, q.routes_verified,
++	    a810_smmu_status_text(q.map_status), q.leaves, q.mismatch, q.ttbr0, q.sctlr, q.cbar, q.smr, q.s2cr, q.gfsr, q.fsr);
++	if (status || a810_gpu_context_buffers(a810_gbuf, &a810_gpool_used)) {
++		a810_fail(12, "GPU SMMU context not ready");
++		return 0;
++	}
++	a810_gpool_used = (a810_gpool_used + 0xfffULL) & ~0xfffULL;
++	printf("SWEET A810: gpuctx sqe %#llx+%#llx@%#llx ring %#llx@%#llx memptrs %#llx@%#llx (pool used %#llx)\n",
++	    a810_gbuf[0].physical, a810_gbuf[0].bytes, a810_gbuf[0].iova, a810_gbuf[1].physical, a810_gbuf[1].iova,
++	    a810_gbuf[2].physical, a810_gbuf[2].iova, a810_gpool_used);
++
++	/* The SQE microcode without its first dword, as adreno_fw_create_bo copies it. */
++	size_t sqe_bytes = 0;
++	const uint8_t *sqe = a810_adt_blob("sqe-firmware", &sqe_bytes);
++	if (!sqe || sqe_bytes < 8 || (sqe_bytes & 3) || sqe_bytes - 4 > a810_gbuf[A810_GPU_SQE].bytes) {
++		printf("SWEET A810: sqe-firmware %zu bytes\n", sqe_bytes);
++		a810_fail(12, "no usable sqe-firmware in the ADT (/sweet-gpu)");
++		return 0;
++	}
++	volatile uint32_t *dst = a810_gbuf[A810_GPU_SQE].cpu;
++	for (size_t i = 4; i < sqe_bytes; i += 4) {
++		dst[(i - 4) / 4] = gpb_le32(sqe + i);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	size_t bad = 0;
++	for (size_t i = 4; i < sqe_bytes; i += 4) {
++		bad += dst[(i - 4) / 4] != gpb_le32(sqe + i);
++	}
++	uint8_t digest[32];
++	a810_sha256(sqe, sqe_bytes, digest);
++	printf("SWEET A810: stage 12 sqe copied %zu bytes (sha256 %02x%02x%02x%02x...), %zu words differ, words %#x %#x %#x\n",
++	    sqe_bytes - 4, digest[0], digest[1], digest[2], digest[3], bad, dst[0], dst[1], dst[2]);
++	if (bad) {
++		a810_fail(12, "SQE copy did not read back");
++		return 0;
++	}
++	return 1;
++}
++
++/* ---- Stage 13: a8xx hw_init's register writes (gpuHwInit) ---- */
++static int
++a810_stage13(void)
++{
++	printf("SWEET A810: next: hw_init: a8xx register writes up to the SQE base\n");
++	a810_gpu_writes = 1;
++	const struct gpb_gx_io gio = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
++	struct gpb_hw *h = &a810_hw;
++	gpb_hw_init(&gio, h);
++	printf("SWEET A810: stage 13 hw_init %s step %u writes %u aperture %u protect %u nonctxt %u mismatches %u halt %#x/%#x "
++	    "rbbm %#x int %#x cp_int %#x xoclk0 %#x\n", h->failed ? "io" : "ok", h->step, h->writes, h->aperture_writes,
++	    h->protect_writes, h->nonctxt_writes, h->mismatches, h->gbif_halt, h->rbbm_gbif_halt, h->rbbm, h->int_status,
++	    h->cp_global, h->xoclk0);
++	printf("SWEET A810: hw_init check %#x %#x %#x %#x %#x %#x %#x %#x\n", h->check[0], h->check[1], h->check[2], h->check[3],
++	    h->check[4], h->check[5], h->check[6], h->check[7]);
++	if (h->failed || h->step != 9) {
++		a810_fail(13, "hw_init did not finish");
++		return 0;
++	}
++	return 1;
++}
++
++/* ---- Stage 14: SQE base, ring, SQE_CNTL, CP_ME_INIT, a first CP_MEM_WRITE, the power-up list (cpStart) ---- */
++static int
++a810_mem_write(uint64_t at, const uint32_t *prefix, unsigned prefix_words, uint32_t value, uint32_t *fence, uint32_t *seen,
++    int *st, int *wait)
++{
++	uint32_t words[8] = {0};
++	unsigned n = 0;
++	for (unsigned i = 0; i < prefix_words; ++i) {
++		words[n++] = prefix[i];
++	}
++	if (a810_pm4_type7(GPB_CP_MEM_WRITE, 3, &words[n])) {
++		return 0;
++	}
++	words[n + 1] = (uint32_t)at;
++	words[n + 2] = (uint32_t)(at >> 32);
++	words[n + 3] = value;
++	n += 4;
++	*wait = -1;
++	*st = a810_ring_submit(&a810_ring, words, n, fence);
++	if (!*st) {
++		*wait = a810_ring_wait(&a810_ring, *fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, seen);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return 1;
++}
++
++static int
++a810_stage14(void)
++{
++	const uint64_t sqe = a810_gbuf[A810_GPU_SQE].iova, bv_rptr = a810_gbuf[A810_GPU_MEMPTRS].iova + 8;   /* rbmemptr(bv_rptr) */
++	printf("SWEET A810: next: cp: SQE base %#llx, ring %#llx, then SQE_CNTL and CP_ME_INIT\n", sqe,
++	    a810_gbuf[A810_GPU_RING].iova);
++	if (a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE, (uint32_t)sqe) ||
++	    a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE + 1, (uint32_t)(sqe >> 32))) {
++		a810_fail(14, "SQE base write");
++		return 0;
++	}
++	int st = a810_ring_attach(&a810_ring, &a810_cp_io, a810_gbuf[A810_GPU_RING].cpu, (size_t)a810_gbuf[A810_GPU_RING].bytes,
++	    a810_gbuf[A810_GPU_RING].iova, a810_gbuf[A810_GPU_MEMPTRS].cpu, (size_t)a810_gbuf[A810_GPU_MEMPTRS].bytes,
++	    a810_gbuf[A810_GPU_MEMPTRS].iova);
++	uint32_t cntl = 0;
++	a810_reg_read(NULL, A810_CP_RB_CNTL, &cntl);
++	printf("SWEET A810: cp ring attach %d rb_cntl %#x\n", st, cntl);
++	if (st || a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV, (uint32_t)bv_rptr) ||
++	    a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV + 1, (uint32_t)(bv_rptr >> 32))) {
++		a810_fail(14, "ring attach");
++		return 0;
++	}
++	a810_cp_state("before");
++	a810_cp_started = 1;                   /* from the SQE_CNTL write on, a failure stops the CP */
++	if (a810_reg_write(NULL, A810_CP_SQE_CNTL, A810_INIT_CP_SQE_CNTL)) {
++		a810_fail(14, "SQE_CNTL write");
++		return 0;
++	}
++	uint32_t fence = 0, seen = 0;
++	int init = a810_cp_init(&a810_ring, sqe, a810_gbuf[A810_GPU_PWRUP].iova, &fence), wait = -1;
++	if (!init) {
++		wait = a810_ring_wait(&a810_ring, fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, &seen);
++	}
++	printf("SWEET A810: stage 14 cp init st %d fence %u %s seen %u\n", init, fence,
++	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen);
++	a810_cp_state("init");
++	if (init || wait) {
++		a810_fail(14, "CP_ME_INIT fence");
++		return 0;
++	}
++	volatile uint32_t *scratch = a810_gbuf[A810_GPU_SCRATCH].cpu;
++	scratch[0] = 0;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	int wst = 0;
++	if (!a810_mem_write(a810_gbuf[A810_GPU_SCRATCH].iova, NULL, 0, 0x5e9a810, &fence, &seen, &wst, &wait)) {
++		a810_fail(14, "pm4 refused");
++		return 0;
++	}
++	const uint32_t word = scratch[0];
++	const int ok = !wst && !wait && word == 0x5e9a810;
++	printf("SWEET A810: stage 14 cp write st %d fence %u %s seen %u scratch %#x %s\n", wst, fence,
++	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, ok ? "ok" : "miss");
++	a810_cp_state("write");
++	if (!ok) {
++		a810_fail(14, "first CP_MEM_WRITE");
++		return 0;
++	}
++	size_t written = 0;
++	st = a810_pwrup_build(&a810_cp_io, a810_gbuf[A810_GPU_PWRUP].cpu, (size_t)a810_gbuf[A810_GPU_PWRUP].bytes, &written);
++	printf("SWEET A810: cp pwrup st %d bytes %zu\n", st, written);
++	if (st) {
++		a810_fail(14, "power-up list");
++		return 0;
++	}
++	return 1;
++}
++
++/* ---- Stage 15: the zap shader through SCM PAS 13, then CP_SET_SECURE_MODE 0 (zapStart) ---- */
++struct a810_scm_reply {
++	uint64_t status, value;
++	unsigned again;
++};
++static void
++a810_smc(uint64_t r[8])
++{
++	register uint64_t x0 __asm__("x0") = r[0];
++	register uint64_t x1 __asm__("x1") = r[1];
++	register uint64_t x2 __asm__("x2") = r[2];
++	register uint64_t x3 __asm__("x3") = r[3];
++	register uint64_t x4 __asm__("x4") = r[4];
++	register uint64_t x5 __asm__("x5") = r[5];
++	register uint64_t x6 __asm__("x6") = r[6];
++	register uint64_t x7 __asm__("x7") = r[7];
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7) : :
++	    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++	r[0] = x0; r[1] = x1; r[2] = x2; r[3] = x3; r[4] = x4; r[5] = x5; r[6] = x6; r[7] = x7;
++}
++/* GpuPowerProbe scmCall: SMC64 SiP yielding call; x0 = 1 (interrupted) is resumed with x0 = 1, the original x1..x5 and
++ * the returned x6, at most 1000 times. Status in x0, the first result in x1. */
++static struct a810_scm_reply
++a810_scm(const char *what, uint32_t svc, uint32_t cmd, uint32_t arginfo, uint64_t a0, uint64_t a1, uint64_t a2)
++{
++	printf("SWEET A810: zap scm %s (%#x %#x %#llx %#llx %#llx)\n", what, gpb_scm_fn(svc, cmd), arginfo, a0, a1, a2);
++	uint64_t r[8] = {gpb_scm_fn(svc, cmd), arginfo, a0, a1, a2, 0, 0, 0};
++	struct a810_scm_reply out = {0, 0, 0};
++	for (;;) {
++		uint64_t x[8] = {r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]};
++		a810_smc(x);
++		if (x[0] != GPB_SCM_INTERRUPTED || out.again >= 1000) {
++			out.status = x[0];
++			out.value = x[1];
++			break;
++		}
++		++out.again;
++		r[0] = GPB_SCM_INTERRUPTED;
++		r[6] = x[6];
++	}
++	printf("SWEET A810: zap scm %s -> status %#llx value %#llx again %u\n", what, out.status, out.value, out.again);
++	return out;
++}
++
++/* One 4 KiB page below 4 GiB for the PAS metadata, physically contiguous and cleaned to memory: kmem_alloc_contig with a
++ * max page number (a 16 KiB kernel page, cacheable, cleaned by VA), else the GMU pool's spare space (below 4 GiB,
++ * write-combined, so ordering only). Never freed: the monitor may read it until auth_and_reset. */
++static int
++a810_zap_metadata(const uint8_t *img, const struct gpb_mdt *m, uint64_t *pa)
++{
++	vm_offset_t kva = 0;
++	kern_return_t kr = kmem_alloc_contig(kernel_map, &kva, PAGE_SIZE, PAGE_MASK, (ppnum_t)(atop_64(0x100000000ULL) - 1), 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT | KMA_NOPAGEWAIT, VM_KERN_MEMORY_IOKIT);
++	ppnum_t pn = kr == KERN_SUCCESS ? pmap_find_phys(kernel_pmap, (addr64_t)kva) : 0;
++	if (pn && ptoa_64(pn) + PAGE_SIZE <= 0x100000000ULL) {
++		gpb_mdt_metadata(img, m, (uint8_t *)kva);
++		sweet_dma_sync_va((const void *)kva, PAGE_SIZE);
++		*pa = ptoa_64(pn);
++		printf("SWEET A810: zap metadata page from kmem_alloc_contig at %#llx\n", *pa);
++		return 0;
++	}
++	uint64_t off = (a810_gmu_context_pool_used() + 0xfffULL) & ~0xfffULL;
++	if (!a810_pool_va || !off || off + 0x1000 > GPB_GMU_POOL_BYTES) {
++		return 1;
++	}
++	volatile uint32_t *page = (volatile uint32_t *)(a810_pool_va + off);
++	static uint32_t tmp[0x1000 / 4];
++	for (unsigned i = 0; i < 0x1000 / 4; ++i) {
++		tmp[i] = 0;
++	}
++	gpb_mdt_metadata(img, m, (uint8_t *)tmp);
++	for (unsigned i = 0; i < 0x1000 / 4; ++i) {
++		page[i] = tmp[i];
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*pa = GPB_GMU_POOL_BASE + off;
++	printf("SWEET A810: zap metadata page from the GMU pool's spare space at %#llx (kmem_alloc_contig %d, pn %#x)\n", *pa,
++	    kr, pn);
++	return 0;
++}
++
++static int
++a810_stage15(void)
++{
++	uint32_t trust = 0;
++	a810_reg_read(NULL, A810_RBBM_SECVID_TRUST_CNTL, &trust);
++	printf("SWEET A810: next: zap: PAS %u into %#llx+%#x, then CP_SET_SECURE_MODE 0; trust_cntl %#x\n", GPB_ZAP_PAS,
++	    GPB_ZAP_REGION, GPB_ZAP_REGION_BYTES, trust);
++	size_t zap_bytes = 0;
++	const uint8_t *zap = a810_adt_blob("zap-mbn", &zap_bytes);
++	if (!zap) {
++		a810_fail(15, "no zap-mbn in the ADT (/sweet-gpu)");
++		return 0;
++	}
++	struct gpb_mdt m;
++	unsigned rule = gpb_mdt_parse(zap, (uint32_t)zap_bytes, GPB_ZAP_REGION_BYTES, &m);
++	printf("SWEET A810: zap mbn %zu bytes rule %u header %#x hash %#x+%#x meta %#x loads %u reloc %u span %#x-%#x\n",
++	    zap_bytes, rule, m.header_bytes, m.hash_offset, m.hash_bytes, m.meta_bytes, m.loads, m.relocatable, m.min_addr,
++	    m.max_addr);
++	if (rule || m.meta_bytes > 0x1000) {
++		a810_fail(15, "zap-mbn not usable");
++		return 0;
++	}
++	struct a810_scm_reply q = a810_scm("is_call_avail", GPB_SCM_SVC_INFO, GPB_SCM_INFO_IS_CALL_AVAIL, GPB_SCM_ARGS_1,
++	    gpb_scm_query(GPB_SCM_SVC_PIL, GPB_SCM_PAS_IS_SUPPORTED), 0, 0);
++	if (q.status || !q.value) {
++		a810_fail(15, "PAS_IS_SUPPORTED not available");
++		return 0;
++	}
++	q = a810_scm("is_supported", GPB_SCM_SVC_PIL, GPB_SCM_PAS_IS_SUPPORTED, GPB_SCM_ARGS_1, GPB_ZAP_PAS, 0, 0);
++	if (q.status || !q.value) {
++		a810_fail(15, "PAS 13 not supported");
++		return 0;
++	}
++	uint64_t meta_pa = 0;
++	if (a810_zap_metadata(zap, &m, &meta_pa)) {
++		a810_fail(15, "no metadata page below 4 GiB");
++		return 0;
++	}
++	q = a810_scm("init_image", GPB_SCM_SVC_PIL, GPB_SCM_PAS_INIT_IMAGE, GPB_SCM_ARGS_INIT_IMAGE, GPB_ZAP_PAS, meta_pa, 0);
++	if (q.status || q.value) {
++		a810_fail(15, "init_image");
++		return 0;
++	}
++	q = a810_scm("mem_setup", GPB_SCM_SVC_PIL, GPB_SCM_PAS_MEM_SETUP, GPB_SCM_ARGS_3, GPB_ZAP_PAS, GPB_ZAP_REGION,
++	    m.max_addr - m.min_addr);
++	if (q.status || q.value) {
++		a810_fail(15, "mem_setup");
++		return 0;
++	}
++	printf("SWEET A810: zap writing %#x bytes into the region\n", m.max_addr - m.min_addr);
++	vm_offset_t region = ml_io_map_wcomb(GPB_ZAP_REGION, GPB_ZAP_REGION_BYTES);
++	if (!region) {
++		a810_fail(15, "zap region map failed");
++		return 0;
++	}
++	gpb_mdt_place(zap, &m, (volatile uint8_t *)region);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	q = a810_scm("auth_and_reset", GPB_SCM_SVC_PIL, GPB_SCM_PAS_AUTH_AND_RESET, GPB_SCM_ARGS_1, GPB_ZAP_PAS, 0, 0);
++	if (q.status || q.value) {
++		a810_fail(15, "auth_and_reset");
++		return 0;
++	}
++	volatile uint32_t *scratch = a810_gbuf[A810_GPU_SCRATCH].cpu;
++	scratch[1] = 0;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	uint32_t secure[2] = {0, 0}, fence = 0, seen = 0;
++	int st = 0, wait = -1;
++	if (a810_pm4_type7(GPB_CP_SET_SECURE_MODE, 1, &secure[0]) ||
++	    !a810_mem_write(a810_gbuf[A810_GPU_SCRATCH].iova + 4, secure, 2, 0x05ec0ff1, &fence, &seen, &st, &wait)) {
++		a810_fail(15, "pm4 refused");
++		return 0;
++	}
++	const uint32_t word = scratch[1];
++	uint32_t after = 0;
++	a810_reg_read(NULL, A810_RBBM_SECVID_TRUST_CNTL, &after);
++	const int ok = !st && !wait && word == 0x05ec0ff1;
++	printf("SWEET A810: stage 15 zap secure off st %d fence %u %s seen %u scratch %#x trust_cntl %#x -> %#x %s\n", st, fence,
++	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, trust, after, ok ? "ok" : "miss");
++	a810_cp_state("zap");
++	if (!ok) {
++		a810_fail(15, "CP_SET_SECURE_MODE 0 / CP_MEM_WRITE");
++		return 0;
++	}
++	return 1;
++}
++
++/* ---- Stage 16: a one-packet IB, then a band the GPU writes into the framebuffer (barStart) ---- */
++#define A810_FB_PA              0xE3940000ULL   /* the 3a's UEFI framebuffer: 1080 x 2392, 4320 bytes a row, x8r8g8b8 */
++#define A810_FB_WIDTH           1080u
++#define A810_FB_HEIGHT          2392u
++#define A810_FB_STRIDE          4320u
++#define A810_BAR_Y0             160u            /* near the top, below the status area */
++#define A810_BAR_ROWS           160u
++
++static int
++a810_ib(uint64_t iova, uint32_t dwords, uint32_t *fence, uint32_t *seen, int *st, int *wait)
++{
++	uint32_t words[4];
++	if (a810_pm4_type7(GPB_CP_INDIRECT_BUFFER, 3, &words[0])) {
++		return 0;
++	}
++	words[1] = (uint32_t)iova;
++	words[2] = (uint32_t)(iova >> 32);
++	words[3] = dwords;
++	*wait = -1;
++	*st = a810_ring_submit(&a810_ring, words, 4, fence);
++	if (!*st) {
++		*wait = a810_ring_wait(&a810_ring, *fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, seen);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return 1;
++}
++
++static int
++a810_stage16(void)
++{
++	uint32_t fence = 0, seen = 0;
++	int st = 0, wait = -1;
++	uint64_t pa = 0;
++	printf("SWEET A810: next: ib: CP_INDIRECT_BUFFER at %#llx with one CP_MEM_WRITE into scratch+8\n", GPB_IB_IOVA);
++	volatile uint32_t *ib = a810_gpool_take(0x1000, &pa);
++	const uint64_t at = a810_gbuf[A810_GPU_SCRATCH].iova + 8;
++	uint32_t header = 0;
++	if (!ib || a810_pm4_type7(GPB_CP_MEM_WRITE, 3, &header)) {
++		a810_fail(16, "IB page");
++		return 0;
++	}
++	ib[0] = header;
++	ib[1] = (uint32_t)at;
++	ib[2] = (uint32_t)(at >> 32);
++	ib[3] = 0x1b810014;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	int mst = a810_gpu_map(GPB_IB_IOVA, pa, 0x1000, A810_GPU_PROT_READ);
++	if (mst) {
++		printf("SWEET A810: ib map %s\n", a810_smmu_status_text((uint32_t)mst));
++		a810_fail(16, "IB map");
++		return 0;
++	}
++	volatile uint32_t *scratch = a810_gbuf[A810_GPU_SCRATCH].cpu;
++	scratch[2] = 0;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	a810_ib(GPB_IB_IOVA, 4, &fence, &seen, &st, &wait);
++	uint32_t word = scratch[2];
++	int ok = !st && !wait && word == 0x1b810014;
++	printf("SWEET A810: stage 16 ib st %d fence %u %s seen %u scratch %#x %s\n", st, fence,
++	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, word, ok ? "ok" : "miss");
++	a810_cp_state("ib");
++	if (!ok) {
++		a810_fail(16, "first IB");
++		return 0;
++	}
++
++	/* The framebuffer: the console's, when it is the 3a's 32-bit panel framebuffer; else the board's own facts. */
++	PE_Video video;
++	uint64_t fb = A810_FB_PA;
++	uint32_t width = A810_FB_WIDTH, height = A810_FB_HEIGHT, stride = A810_FB_STRIDE;
++	if (PE_current_console(&video) == 0) {
++		printf("SWEET A810: bar: console %#lx %lux%lu row %lu depth %lu\n", video.v_baseAddr, video.v_width,
++		    video.v_height, video.v_rowBytes, video.v_depth);
++		if (video.v_depth == 32 && video.v_baseAddr == A810_FB_PA && video.v_width >= 3 && video.v_width <= 16381 &&
++		    video.v_height >= 3 * A810_BAR_ROWS && video.v_rowBytes >= video.v_width * 4) {
++			width = (uint32_t)video.v_width;
++			height = (uint32_t)video.v_height;
++			stride = (uint32_t)video.v_rowBytes;
++		}
++	}
++	struct gpb_bar b;
++	b.y0 = A810_BAR_Y0;
++	b.rows = A810_BAR_ROWS;
++	b.width = width;
++	b.row_bytes = stride;
++	const uint64_t first = fb + (uint64_t)b.y0 * stride, end = first + (uint64_t)(b.rows - 1) * stride + width * 4u;
++	b.page = first & ~0xfffULL;
++	b.bytes = ((end + 0xfffULL) & ~0xfffULL) - b.page;
++	b.offset = first - b.page;
++	b.ib_dwords = b.rows * (3u + width);
++	b.ib_bytes = (b.ib_dwords * 4u + 0xfffu) & ~0xfffu;
++	printf("SWEET A810: bar: fb %#llx %ux%u row %u; rows %u-%u span %#llx+%#llx at %#llx, ib %u dwords\n", fb, width, height,
++	    stride, b.y0, b.y0 + b.rows - 1, b.page, b.bytes, b.offset, b.ib_dwords);
++	if (b.y0 + b.rows > height || b.bytes > GPB_FB_MAX || b.ib_bytes > GPB_BAR_IB_MAX) {
++		a810_fail(16, "bar plan");
++		return 0;
++	}
++	mst = a810_gpu_map(GPB_FB_IOVA, b.page, b.bytes, A810_GPU_PROT_READ | A810_GPU_PROT_WRITE);
++	if (mst) {
++		printf("SWEET A810: bar fb map %s\n", a810_smmu_status_text((uint32_t)mst));
++		a810_fail(16, "framebuffer map");
++		return 0;
++	}
++	volatile uint32_t *bar_ib = a810_gpool_take(b.ib_bytes, &pa);
++	if (!bar_ib || a810_pm4_type7(GPB_CP_MEM_WRITE, b.width + 2, &header)) {
++		a810_fail(16, "bar IB");
++		return 0;
++	}
++	/* gpb_bar_fill, written straight into the write-combined IB with 32-bit stores */
++	uint32_t k = 0;
++	for (uint32_t row = 0; row < b.rows; ++row) {
++		const uint64_t to = GPB_FB_IOVA + b.offset + (uint64_t)row * b.row_bytes;
++		bar_ib[k++] = header;
++		bar_ib[k++] = (uint32_t)to;
++		bar_ib[k++] = (uint32_t)(to >> 32);
++		for (uint32_t x = 0; x < b.width; ++x) {
++			bar_ib[k++] = gpb_bar_pixel(&b, x, row);
++		}
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	mst = a810_gpu_map(GPB_BAR_IB_IOVA, pa, b.ib_bytes, A810_GPU_PROT_READ);
++	if (mst) {
++		printf("SWEET A810: bar ib map %s\n", a810_smmu_status_text((uint32_t)mst));
++		a810_fail(16, "bar IB map");
++		return 0;
++	}
++	printf("SWEET A810: next: bar: drawing once from the IB at %#llx\n", GPB_BAR_IB_IOVA);
++	a810_ib(GPB_BAR_IB_IOVA, b.ib_dwords, &fence, &seen, &st, &wait);
++	uint32_t px[3] = {0, 0, 0};
++	vm_offset_t view = ml_io_map_wcomb(b.page, b.bytes);
++	if (view) {
++		const volatile uint32_t *mid = (const volatile uint32_t *)(view + b.offset + (size_t)(b.rows / 2) * b.row_bytes);
++		px[0] = mid[b.width / 6];
++		px[1] = mid[b.width / 2];
++		px[2] = mid[b.width * 5 / 6];
++	}
++	ok = !st && !wait;
++	const int same = px[0] == 0x00ff0000u && px[1] == 0x0000ff00u && px[2] == 0x000000ffu;
++	printf("SWEET A810: stage 16 bar st %d fence %u %s seen %u pixels %#x %#x %#x %s\n", st, fence,
++	    wait < 0 ? "-" : a810_fence_text[wait & 3], seen, px[0], px[1], px[2], ok && same ? "ok" : "miss");
++	a810_cp_state("bar");
++	if (!ok) {
++		a810_fail(16, "bar IB fence");
++		return 0;
++	}
++	a810_ring_request_reset(&a810_ring);   /* the first user submission carries the context entry */
++	a810_ready = 1;
++	printf("SWEET A810: the GPU is up (sweet_a810_ready); the band stays for 10 s unless the console scrolls over it\n");
++	delay_for_interval(10, NSEC_PER_SEC);
++	return 1;
++}
++
++/* ---- sweet_a810_api.h ---- */
++bool
++sweet_a810_ready(void)
++{
++	return a810_ready && !a810_ring.poisoned;
++}
++
++int
++sweet_a810_submit_ib(uint64_t iova, uint32_t dwords, uint32_t *seqno)
++{
++	uint32_t words[4];
++	if (!seqno) {
++		return EINVAL;
++	}
++	*seqno = 0;
++	if (!dwords || dwords > 0xfffff || (iova & 3) || iova < SWEET_A810_VA_START || iova >= SWEET_A810_VA_END ||
++	    (uint64_t)dwords * 4 > SWEET_A810_VA_END - iova || a810_pm4_type7(GPB_CP_INDIRECT_BUFFER, 3, &words[0])) {
++		return EINVAL;
++	}
++	words[1] = (uint32_t)iova;
++	words[2] = (uint32_t)(iova >> 32);
++	words[3] = dwords;
++	lck_mtx_lock(&a810_lck);
++	int st = sweet_a810_ready() ? a810_ring_submit_framed(&a810_ring, words, 4, seqno) : A810_RING_NOT_READY;
++	lck_mtx_unlock(&a810_lck);
++	switch (st) {
++	case A810_RING_OK: return 0;
++	case A810_RING_NO_SPACE: return ENOSPC;
++	case A810_RING_ARGUMENT: return EINVAL;
++	case A810_RING_IO: return EIO;
++	default: return ENXIO;
++	}
++}
++
++bool
++sweet_a810_fence_passed(uint32_t seqno)
++{
++	if (!a810_ready) {
++		return false;
++	}
++	return (int32_t)(a810_ring_observed(&a810_ring) - seqno) >= 0;
++}
++
++static int
++a810_vm_errno(int st, int map)
++{
++	/* ArmSmmu4KStatus: 0 ok, 2 bad range, 7 state mismatch, 8 I/O, 9 timeout, 10 busy */
++	switch (st) {
++	case 0: return 0;
++	case 1: case 2: case 3: return EINVAL;
++	case 7: return map ? EEXIST : ENOENT;
++	case 10: return ENXIO;
++	default: return EIO;
++	}
++}
++
++int
++sweet_a810_vm_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot)
++{
++	if (!bytes || ((iova | pa | bytes) & 0xfff) || !(prot & SWEET_A810_PROT_READ) || (prot & ~7u) ||
++	    iova < SWEET_A810_VA_START || iova >= SWEET_A810_VA_END || bytes > SWEET_A810_VA_END - iova) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&a810_lck);
++	int st = sweet_a810_ready() ? a810_gpu_map(iova, pa, bytes, prot) : 10;
++	lck_mtx_unlock(&a810_lck);
++	return a810_vm_errno(st, 1);
++}
++
++int
++sweet_a810_vm_unmap(uint64_t iova, uint64_t bytes)
++{
++	if (!bytes || ((iova | bytes) & 0xfff) || iova < SWEET_A810_VA_START || iova >= SWEET_A810_VA_END ||
++	    bytes > SWEET_A810_VA_END - iova) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&a810_lck);
++	int st = sweet_a810_ready() ? a810_gpu_unmap(iova, bytes) : 10;
++	lck_mtx_unlock(&a810_lck);
++	return a810_vm_errno(st, 0);
++}
++
+ static void
+ a810_thread(void *arg, wait_result_t wr)
+ {
+@@ -784,6 +1570,21 @@ a810_thread(void *arg, wait_result_t wr)
+ 	if (ok && mode >= 11) {
+ 		ok = a810_stage11();
+ 	}
++	if (ok && mode >= 12) {
++		ok = a810_stage12(&r);
++	}
++	if (ok && mode >= 13) {
++		ok = a810_stage13();
++	}
++	if (ok && mode >= 14) {
++		ok = a810_stage14();
++	}
++	if (ok && mode >= 15) {
++		ok = a810_stage15();
++	}
++	if (ok && mode >= 16) {
++		ok = a810_stage16();
++	}
+ 	printf("SWEET A810: done (mode %u, %s)\n", mode, ok ? "every stage passed" : "stopped at a gate");
+ 	thread_terminate(current_thread());
+ }
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+new file mode 100644
+index 0000000..8960071
+--- /dev/null
++++ b/bsd/dev/sweet_a810_api.h
+@@ -0,0 +1,46 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Nothing Phone (3a) "asteroids": the Adreno 810 kernel interface left behind by sweeta810=16 (sweet_a810.c), for the
++ * next integration step (an IOKit/IOGPU front end). Nothing calls it yet.
++ *
++ * Every call refuses (false / nonzero) unless stages 1-16 all passed in this boot. The GPU context is the one stage 12
++ * built: bank 0, ASID 2, a 2 GiB lower (TTBR0) GPU address space with 4 KiB pages, Normal non-cacheable (the CPU must
++ * use a matching write-combined or uncached view of anything it shares with the GPU). GPU addresses below
++ * SWEET_A810_VA_START hold the kernel's own buffers (SQE, ring, memptrs, power-up list, scratch, the bring-up IBs and the
++ * framebuffer band), so maps and IBs must lie in [SWEET_A810_VA_START, SWEET_A810_VA_END).
++ * All calls are serialised by one mutex; none may be called from interrupt context. Modelled on NativeAdreno's
++ * NativeAdrenoVm::map/unmap and NativeAdrenoRing::submitFramed/observeFence (MIT, Copyright (c) 2026 NativeAdreno
++ * contributors), which UniXNU's user client uses.
++ */
++#ifndef SWEET_A810_API_H
++#define SWEET_A810_API_H
++#include <stdint.h>
++#include <stdbool.h>
++
++#define SWEET_A810_VA_START     0x20000000ULL   /* GPB_CLIENT_VA_START */
++#define SWEET_A810_VA_END       0x80000000ULL   /* the end of the 2 GiB aperture */
++#define SWEET_A810_PROT_READ    1u
++#define SWEET_A810_PROT_WRITE   2u
++#define SWEET_A810_PROT_EXEC    4u
++
++/* Errors: 0 success, else one of these (errno values). */
++/*   ENXIO   the GPU is not up (sweeta810 < 16 or a stage failed) or went down (ring poisoned)
++ *   EINVAL  unaligned or out-of-window address/size, zero size, size over the ring
++ *   EEXIST  a map over a page already mapped (nothing changed)
++ *   ENOENT  an unmap of a page not mapped (nothing changed)
++ *   ENOSPC  the ring has no room now (retry after a fence passes)
++ *   EIO     an SMMU or register access failed */
++
++/* Stages 1-16 passed: GX on, CP running out of secure mode, the GPU context ready. */
++bool sweet_a810_ready(void);
++/* One CP_INDIRECT_BUFFER of `dwords` (1..0xfffff) at `iova`, with the A7XX/A8XX BR/BV framing and a ring timestamp
++ * fence (the first call after the bring-up also carries the context-reset entry). *seqno receives the fence number. */
++int sweet_a810_submit_ib(uint64_t iova, uint32_t dwords, uint32_t *seqno);
++/* True once the CP wrote a timestamp >= seqno (wrap-safe for 2^31 submissions). Never blocks. */
++bool sweet_a810_fence_passed(uint32_t seqno);
++/* Map `bytes` (4 KiB multiple) of physically contiguous memory at `pa` to `iova` (both 4 KiB aligned) with
++ * SWEET_A810_PROT_* (READ required); unmap the same range. Each is one TLBIASID + TLBSYNC on success. The caller keeps the
++ * pages alive until the unmap returned and every submission that used them passed its fence. */
++int sweet_a810_vm_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot);
++int sweet_a810_vm_unmap(uint64_t iova, uint64_t bytes);
++#endif
+diff --git a/bsd/dev/sweet_a810_cp.c b/bsd/dev/sweet_a810_cp.c
+new file mode 100644
+index 0000000..ccd4402
+--- /dev/null
++++ b/bsd/dev/sweet_a810_cp.c
+@@ -0,0 +1,503 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Nothing Phone (3a) "asteroids": the Adreno 810 command processor ring, CP init, power-up list and PM4 headers.
++ * See sweet_a810_cp.h for what is ported from where (NativeAdreno NativeAdrenoRing/CpInit/Pwrup/Registers, MIT;
++ * rootstockos AdrenoPM4, MIT). The packet values and their sources are NativeAdrenoRing.cpp's, unchanged:
++ * registers/adreno/a6xx.xml and adreno_pm4.xml at the pinned Linux tree, a7xx_submit/a6xx_set_pagetable/a7xx_cp_init in
++ * a6xx_gpu.c (a8xx uses a7xx_submit; a8xx_cp_init sends the same two packets).
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include "sweet_a810_cp.h"
++#include "NativeAdrenoA810HwInit.h"
++
++/* ---- AdrenoPM4.c ---- */
++static uint32_t
++odd_bit(uint32_t field)
++{
++	uint32_t parity = 1;
++	while (field) {
++		parity ^= 1;
++		field &= field - 1;
++	}
++	return parity;
++}
++int
++a810_pm4_type4(uint32_t reg, uint32_t count, uint32_t *header)
++{
++	if (!header || reg > 0x3ffff || !count || count > 127 || count - 1 > 0x3ffff - reg) {
++		return 1;
++	}
++	*header = 0x40000000u | count | (odd_bit(count) << 7) | (reg << 8) | (odd_bit(reg) << 27);
++	return 0;
++}
++int
++a810_pm4_type7(uint32_t opcode, uint32_t count, uint32_t *header)
++{
++	if (!header || opcode > 127 || count > 0x3fff) {
++		return 1;
++	}
++	*header = 0x70000000u | count | (odd_bit(count) << 15) | (opcode << 16) | (odd_bit(opcode) << 23);
++	return 0;
++}
++
++/* ---- NativeAdrenoRing.cpp (gen8 table of NativeAdrenoRegisters.h) ---- */
++enum {
++	RingFenceOpcode = 0x46,        /* CP_EVENT_WRITE7 */
++	RingFenceEvent = 0x31,         /* CACHE_CLEAN */
++	RingFenceEnable = 1u << 27,
++	RingFenceIrq = 1u << 31,
++	RingBlockBytes = 32,
++	RingThreadControl = 0x17,
++	RingThreadBr = 1,
++	RingThreadBv = 2,
++	RingThreadBoth = 3,
++	RingSyncThreads = 1u << 31,
++	RingSetMarker = 0x65,
++	RingWaitTimestamp = 0x14,
++	RingCcuInvalidateDepth = 0x18,
++	RingCcuInvalidateColor = 0x19,
++	RingCacheFlush7 = 0x32,
++	RingCacheInvalidate7 = 0x33,
++	RingWaitForIdle = 0x26,
++	RingPrologueWords = 11,
++	RingResetContextState = 0x1f,
++	RingResetAll = 0xf,
++	RingLrzFlushInvalidate = 0x26,
++	RingCacheInvalidate = 0x31,
++	RingWaitRegMem = 0x3c,
++	RingWaitWriteEq = 3,
++	RingResetWords = 26 + 2,       /* gen7's 26 plus RBBM_SLICE_PERFCTR_SRAM_INIT_CMD on gen8 */
++	RingFenceWords = 7,
++	RingFramedFenceWords = 31,
++	RingBvFenceOffset = 12,
++};
++#define RING_SCRATCH            A810_CP_SCRATCH_GLOBAL(2)
++
++static uint32_t
++ilog2_size(size_t value)
++{
++	uint32_t result = 0;
++	while (value > 1) {
++		value >>= 1;
++		++result;
++	}
++	return result;
++}
++static int
++ring_poison(struct a810_ring *r)
++{
++	r->poisoned = 1;
++	return A810_RING_IO;
++}
++static int
++ring_write_wptr(struct a810_ring *r, uint32_t value)
++{
++	++r->wptr_writes;      /* the board's write32 repeats a write the GMU AHB fence dropped (GpuPowerProbe ringWrite) */
++	return r->io.write32(r->io.cookie, A810_CP_RB_WPTR, value) ? ring_poison(r) : A810_RING_OK;
++}
++static int
++ring_read_rptr(struct a810_ring *r, uint32_t *value)
++{
++	uint32_t rptr = 0;
++	if (r->io.read32(r->io.cookie, A810_CP_RB_RPTR, &rptr) || rptr >= r->ring_bytes / 4) {
++		return ring_poison(r);
++	}
++	*value = rptr;
++	r->rptr_shadow = rptr;
++	return A810_RING_OK;
++}
++/* One TYPE7 packet into words; the next free index, or 0 when the header cannot be built. */
++static size_t
++packet(uint32_t *words, size_t at, uint32_t opcode, const uint32_t *payload, uint32_t count)
++{
++	if (a810_pm4_type7(opcode, count, &words[at])) {
++		return 0;
++	}
++	for (uint32_t i = 0; i < count; ++i) {
++		words[at + 1 + i] = payload[i];
++	}
++	return at + 1 + count;
++}
++static int
++emit_prologue(struct a810_ring *r, uint32_t at, int reset, uint32_t *end)
++{
++	const uint32_t mask = (uint32_t)(r->ring_bytes / 4 - 1);
++	uint32_t words[RingPrologueWords + RingResetWords] = {0};
++	const uint32_t br = RingSyncThreads | RingThreadBr, sync_both = RingSyncThreads | RingThreadBoth, both = RingThreadBoth;
++	const uint32_t marker = 0x101;
++	const uint32_t count = RingPrologueWords + (reset ? (uint32_t)RingResetWords : 0u);
++	size_t n = packet(words, 0, RingThreadControl, &br, 1);
++	if (reset) {
++		const uint64_t at4 = r->fence_iova + 4;
++		const uint32_t wait[4] = {0, (uint32_t)at4, (uint32_t)(at4 >> 32), r->seqno}, all = RingResetAll;
++		const uint32_t lrz = RingLrzFlushInvalidate, invalidate = RingCacheInvalidate;
++		if (n) n = packet(words, n, RingWaitTimestamp, wait, 4);
++		if (n) n = packet(words, n, RingThreadControl, &sync_both, 1);
++		if (n) n = packet(words, n, RingResetContextState, &all, 1);
++		if (n) n = packet(words, n, RingThreadControl, &sync_both, 1);
++		if (n) n = packet(words, n, RingFenceOpcode, &lrz, 1);
++		if (n) n = packet(words, n, RingThreadControl, &br, 1);
++		if (n && !a810_pm4_type4(A810_RBBM_PERFCTR_SRAM_INIT_CMD, 1, &words[n])) {
++			words[n + 1] = 1;
++			n += 2;
++		} else {
++			n = 0;
++		}
++		if (n && !a810_pm4_type4(A810_RBBM_SLICE_PERFCTR_SRAM_INIT_CMD, 1, &words[n])) {
++			words[n + 1] = 1;
++			n += 2;
++		} else {
++			n = 0;
++		}
++		if (n) n = packet(words, n, RingFenceOpcode, &invalidate, 1);
++		const uint32_t sram[6] = {RingWaitWriteEq, A810_RBBM_PERFCTR_SRAM_INIT_STATUS, 0, 1, 1, 0};
++		if (n) n = packet(words, n, RingWaitRegMem, sram, 6);
++	}
++	const uint32_t flush = RingCacheFlush7, invalidate7 = RingCacheInvalidate7;
++	if (n) n = packet(words, n, RingFenceOpcode, &flush, 1);
++	if (n) n = packet(words, n, RingFenceOpcode, &invalidate7, 1);
++	if (n) n = packet(words, n, RingWaitForIdle, NULL, 0);
++	if (n) n = packet(words, n, RingThreadControl, &both, 1);
++	if (n) n = packet(words, n, RingSetMarker, &marker, 1);
++	if (n != count) {
++		return ring_poison(r);
++	}
++	for (uint32_t i = 0; i < count; ++i) {
++		r->ring[(at + i) & mask] = words[i];
++	}
++	*end = (at + count) & mask;
++	return A810_RING_OK;
++}
++static int
++emit_fence(struct a810_ring *r, uint32_t at, uint32_t seqno, uint32_t *end)
++{
++	const uint32_t mask = (uint32_t)(r->ring_bytes / 4 - 1);
++	uint32_t words[RingFenceWords] = {0};
++	if (a810_pm4_type4(RING_SCRATCH, 1, &words[0]) || a810_pm4_type7(RingFenceOpcode, 4, &words[2])) {
++		return ring_poison(r);
++	}
++	words[1] = seqno;
++	words[3] = RingFenceEvent | RingFenceEnable | RingFenceIrq;
++	const uint64_t at4 = r->fence_iova + 4;  /* msm_rbmemptrs.fence; +0 is the CP's RPTR shadow */
++	words[4] = (uint32_t)at4;
++	words[5] = (uint32_t)(at4 >> 32);
++	words[6] = seqno;
++	for (uint32_t i = 0; i < RingFenceWords; ++i) {
++		r->ring[(at + i) & mask] = words[i];
++	}
++	*end = (at + RingFenceWords) & mask;
++	return A810_RING_OK;
++}
++static int
++emit_framed_fence(struct a810_ring *r, uint32_t at, uint32_t seqno, uint32_t *end)
++{
++	const uint32_t mask = (uint32_t)(r->ring_bytes / 4 - 1);
++	uint32_t words[RingFramedFenceWords] = {0};
++	if (a810_pm4_type4(RING_SCRATCH, 1, &words[0])) {
++		return ring_poison(r);
++	}
++	words[1] = seqno;
++	const uint64_t at4 = r->fence_iova + 4, bv = r->fence_iova + RingBvFenceOffset;
++	const uint32_t br = RingThreadBr, bv_thread = RingThreadBv, both = RingThreadBoth, depth = RingCcuInvalidateDepth;
++	const uint32_t color = RingCcuInvalidateColor, marker = 0x100;
++	const uint32_t bv_write[4] = {RingFenceEvent | RingFenceEnable, (uint32_t)bv, (uint32_t)(bv >> 32), seqno};
++	const uint32_t bv_wait[4] = {0, (uint32_t)bv, (uint32_t)(bv >> 32), seqno};
++	const uint32_t fence[4] = {RingFenceEvent | RingFenceEnable | RingFenceIrq, (uint32_t)at4, (uint32_t)(at4 >> 32), seqno};
++	size_t n = packet(words, 2, RingThreadControl, &br, 1);
++	if (n) n = packet(words, n, RingFenceOpcode, &depth, 1);
++	if (n) n = packet(words, n, RingFenceOpcode, &color, 1);
++	if (n) n = packet(words, n, RingThreadControl, &bv_thread, 1);
++	if (n) n = packet(words, n, RingFenceOpcode, bv_write, 4);
++	if (n) n = packet(words, n, RingThreadControl, &br, 1);
++	if (n) n = packet(words, n, RingWaitTimestamp, bv_wait, 4);
++	if (n) n = packet(words, n, RingFenceOpcode, fence, 4);
++	if (n) n = packet(words, n, RingThreadControl, &both, 1);
++	if (n) n = packet(words, n, RingSetMarker, &marker, 1);
++	if (n != RingFramedFenceWords) {
++		return ring_poison(r);
++	}
++	for (uint32_t i = 0; i < RingFramedFenceWords; ++i) {
++		r->ring[(at + i) & mask] = words[i];
++	}
++	*end = (at + RingFramedFenceWords) & mask;
++	return A810_RING_OK;
++}
++int
++a810_ring_attach(struct a810_ring *r, const struct a810_cp_io *io, volatile void *ring, size_t ring_bytes, uint64_t ring_iova,
++    volatile void *fence, size_t fence_bytes, uint64_t fence_iova)
++{
++	if (!r || r->attached || r->poisoned) {
++		return A810_RING_BUSY;
++	}
++	if (!io || !io->write32 || !io->read32 || !io->barrier || !ring || !fence || ring_bytes < 8192 ||
++	    ring_bytes > (1u << 20) || (ring_bytes & (ring_bytes - 1)) || ((ring_iova | ring_bytes) & (ring_bytes - 1)) ||
++	    (ring_iova & 4095) || fence_bytes < 64 || (fence_iova & 7) || fence_bytes >= (1u << 24)) {
++		return A810_RING_ARGUMENT;
++	}
++	r->io = *io;
++	r->ring = (volatile uint32_t *)ring;
++	r->ring_bytes = ring_bytes;
++	r->ring_iova = ring_iova;
++	r->fence = (volatile uint32_t *)fence;
++	r->fence_bytes = fence_bytes;
++	r->fence_iova = fence_iova;
++	for (size_t i = 0; i < fence_bytes / 4; ++i) {
++		r->fence[i] = 0;
++	}
++	const uint32_t control = (ilog2_size(ring_bytes / 8) & 0x3f) | (ilog2_size(RingBlockBytes / 8) << 8);
++	const uint32_t writes[] = {A810_CP_RB_BASE, (uint32_t)ring_iova, A810_CP_RB_BASE + 1, (uint32_t)(ring_iova >> 32),
++		                   A810_CP_RB_CNTL, control, A810_CP_RB_RPTR_ADDR, (uint32_t)fence_iova, A810_CP_RB_RPTR_ADDR + 1,
++		                   (uint32_t)(fence_iova >> 32), A810_CP_RB_WPTR, 0, RING_SCRATCH, 0};
++	for (size_t i = 0; i < sizeof writes / sizeof writes[0]; i += 2) {
++		if (r->io.write32(r->io.cookie, writes[i], writes[i + 1])) {
++			return ring_poison(r);
++		}
++	}
++	uint32_t rptr = 0;
++	int status = ring_read_rptr(r, &rptr);
++	if (status) {
++		return status;
++	}
++	r->next = rptr;
++	r->seqno = r->completed = r->submissions = 0;
++	r->attached = 1;
++	return A810_RING_OK;
++}
++void
++a810_ring_request_reset(struct a810_ring *r)
++{
++	r->reset_pending = 1;
++}
++static int
++ring_submit_words(struct a810_ring *r, const uint32_t *words, size_t count, uint32_t *fence, int framed)
++{
++	if (!fence) {
++		return A810_RING_ARGUMENT;
++	}
++	*fence = 0;
++	if (!r->attached || r->poisoned) {
++		return A810_RING_NOT_READY;
++	}
++	if (!words || !count) {
++		return A810_RING_ARGUMENT;
++	}
++	const uint32_t size_words = (uint32_t)(r->ring_bytes / 4), mask = size_words - 1;
++	const int reset = framed && r->reset_pending;
++	const uint32_t extra = framed ? RingPrologueWords + (reset ? (uint32_t)RingResetWords : 0u) + RingFramedFenceWords :
++	    (uint32_t)RingFenceWords;
++	if (count > size_words - extra - 8) {
++		return A810_RING_NO_SPACE;
++	}
++	uint32_t rptr = 0;
++	int status = ring_read_rptr(r, &rptr);
++	if (status) {
++		return status;
++	}
++	const uint32_t used = (r->next - rptr) & mask;
++	if (count + extra + 8 > size_words - used) {
++		return A810_RING_NO_SPACE;
++	}
++	uint32_t at = r->next;
++	if (framed) {
++		status = emit_prologue(r, at, reset, &at);
++		if (status) {
++			return status;
++		}
++	}
++	for (size_t i = 0; i < count; ++i) {
++		r->ring[(at + i) & mask] = words[i];
++	}
++	at = (at + (uint32_t)count) & mask;
++	uint32_t end = 0;
++	status = framed ? emit_framed_fence(r, at, r->seqno + 1, &end) : emit_fence(r, at, r->seqno + 1, &end);
++	if (status) {
++		return status;
++	}
++	if (r->io.barrier(r->io.cookie)) {       /* the ring is Normal non-cacheable: ordering only */
++		return ring_poison(r);
++	}
++	status = ring_write_wptr(r, end);
++	if (status) {
++		return status;
++	}
++	r->next = end;
++	*fence = ++r->seqno;
++	++r->submissions;
++	if (reset) {
++		r->reset_pending = 0;
++	}
++	return A810_RING_OK;
++}
++int
++a810_ring_submit(struct a810_ring *r, const uint32_t *words, size_t count, uint32_t *fence)
++{
++	return ring_submit_words(r, words, count, fence, 0);
++}
++int
++a810_ring_submit_framed(struct a810_ring *r, const uint32_t *words, size_t count, uint32_t *fence)
++{
++	return ring_submit_words(r, words, count, fence, 1);
++}
++uint32_t
++a810_ring_observed(const struct a810_ring *r)
++{
++	if (!r->attached) {
++		return 0;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	return r->fence[1];
++}
++int
++a810_ring_wait(struct a810_ring *r, uint32_t fence, uint64_t (*now_us)(void), void (*idle)(void), uint32_t timeout_us,
++    uint32_t *observed)
++{
++	if (observed) {
++		*observed = 0;
++	}
++	if (!r->attached || r->poisoned) {
++		return A810_FENCE_POISONED;
++	}
++	if (!fence || fence > r->seqno) {
++		return A810_FENCE_ARGUMENT;
++	}
++	uint64_t start = now_us ? now_us() : 0;
++	for (;;) {
++		__asm__ volatile ("dsb sy" ::: "memory");
++		const uint32_t value = r->fence[1];
++		if (observed) {
++			*observed = value;
++		}
++		if (value >= fence) {
++			if (value > r->seqno) {
++				ring_poison(r);
++				return A810_FENCE_POISONED;
++			}
++			if (value > r->completed) {
++				r->completed = value;
++			}
++			return A810_FENCE_DONE;
++		}
++		if (!now_us || now_us() - start >= timeout_us) {
++			return A810_FENCE_TIMEOUT;
++		}
++		if (idle) {
++			idle();
++		}
++	}
++}
++int
++a810_ring_kick(struct a810_ring *r)
++{
++	if (!r->attached || r->poisoned) {
++		return A810_RING_NOT_READY;
++	}
++	if (r->io.barrier(r->io.cookie)) {
++		return ring_poison(r);
++	}
++	return ring_write_wptr(r, r->next);
++}
++
++/* ---- NativeAdrenoCpInit.cpp ---- */
++int
++a810_cp_init(struct a810_ring *r, uint64_t sqe_iova, uint64_t pwrup_iova, uint32_t *fence)
++{
++	if (!fence) {
++		return A810_RING_ARGUMENT;
++	}
++	*fence = 0;
++	if (!r || r->poisoned || !sqe_iova || (sqe_iova & 4095) || !pwrup_iova || (pwrup_iova & 3)) {
++		return A810_RING_ARGUMENT;
++	}
++	uint32_t lo = 0, hi = 0;
++	if (r->io.read32(r->io.cookie, A810_CP_SQE_INSTR_BASE, &lo) || r->io.read32(r->io.cookie, A810_CP_SQE_INSTR_BASE + 1, &hi) ||
++	    (((uint64_t)hi << 32) | lo) != sqe_iova) {
++		return A810_RING_IO;
++	}
++	uint32_t words[10] = {0};
++	if (a810_pm4_type7(0x17, 1, &words[0]) || a810_pm4_type7(0x48, 7, &words[2])) {
++		return A810_RING_IO;
++	}
++	words[1] = 1u << 27;                   /* CP_THREAD_CONTROL: CONCURRENT_BIN_DISABLE */
++	words[3] = (1u << 0) | (1u << 1) | (1u << 3) | (1u << 6) | (1u << 8);
++	words[4] = 0x00000003;                 /* hardware contexts */
++	words[5] = 0x20000000;                 /* error detection */
++	words[6] = 0x00000002;                 /* operation mode */
++	words[7] = (uint32_t)pwrup_iova;
++	words[8] = (uint32_t)(pwrup_iova >> 32);
++	words[9] = 1u << 31;                   /* read registers from the list */
++	return a810_ring_submit(r, words, 10, fence);
++}
++
++/* ---- NativeAdrenoPwrup.cpp buildA810 ---- */
++int
++a810_pwrup_build(const struct a810_cp_io *io, volatile uint32_t *out, size_t capacity, size_t *written)
++{
++	if (!io || !out || !written) {
++		return A810_RING_ARGUMENT;
++	}
++	*written = 0;
++	uint32_t dynamic = 0;
++	for (uint32_t pipe = A810_PIPE_BR; pipe <= A810_PIPE_DDE_BV; ++pipe) {
++		for (size_t i = 0; i < NATIVE_ADRENO_A810_DYN_PWRUP_COUNT; ++i) {
++			if (NativeAdrenoA810DynPwrup[i][1] & (1u << pipe)) {
++				++dynamic;
++			}
++		}
++	}
++	const uint32_t ifpc = NATIVE_ADRENO_A810_IFPC_COUNT, preemption = NATIVE_ADRENO_A810_PWRUP_COUNT;
++	const size_t needed = 16 + (size_t)(ifpc + preemption) * 8 + (size_t)dynamic * 12;
++	if (capacity < needed || ifpc > 0xff || preemption > 0xff || dynamic > 0xffff) {
++		return A810_RING_NO_SPACE;
++	}
++	for (size_t i = 0; i < needed / 4; ++i) {
++		out[i] = 0;
++	}
++	/* struct cpu_gpu_lock: gpu_req, cpu_req, turn zero; then u8 ifpc_len, u8 preemption_len, u16 dynamic_len */
++	out[3] = ifpc | preemption << 8 | dynamic << 16;
++	size_t k = 4;
++	int status = 0;
++	if (io->write32(io->cookie, A810_CP_APERTURE_CNTL_HOST, 0)) {
++		return A810_RING_IO;
++	}
++	for (size_t i = 0; i < ifpc && !status; ++i) {
++		uint32_t v = 0;
++		out[k++] = NativeAdrenoA810IfpcRegs[i];
++		status = io->read32(io->cookie, NativeAdrenoA810IfpcRegs[i], &v);
++		out[k++] = v;
++	}
++	for (size_t i = 0; i < preemption && !status; ++i) {
++		uint32_t v = 0;
++		out[k++] = NativeAdrenoA810PwrupRegs[i];
++		status = io->read32(io->cookie, NativeAdrenoA810PwrupRegs[i], &v);
++		out[k++] = v;
++	}
++	for (uint32_t pipe = A810_PIPE_BR; pipe <= A810_PIPE_DDE_BV && !status; ++pipe) {
++		for (size_t i = 0; i < NATIVE_ADRENO_A810_DYN_PWRUP_COUNT && !status; ++i) {
++			if (!(NativeAdrenoA810DynPwrup[i][1] & (1u << pipe))) {
++				continue;
++			}
++			const uint32_t aperture = pipe << A810_CP_APERTURE_CNTL_HOST_PIPEID_SHIFT;   /* SLICEID 0 */
++			uint32_t v = 0;
++			out[k++] = aperture;
++			out[k++] = NativeAdrenoA810DynPwrup[i][0];
++			status = io->write32(io->cookie, A810_CP_APERTURE_CNTL_HOST, aperture) ||
++			    io->read32(io->cookie, NativeAdrenoA810DynPwrup[i][0], &v);
++			out[k++] = v;
++		}
++	}
++	if (io->write32(io->cookie, A810_CP_APERTURE_CNTL_HOST, 0)) {
++		status = 1;
++	}
++	if (status) {
++		for (size_t i = 0; i < needed / 4; ++i) {
++			out[i] = 0;
++		}
++		return A810_RING_IO;
++	}
++	io->barrier(io->cookie);
++	*written = needed;
++	return A810_RING_OK;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_a810_cp.h b/bsd/dev/sweet_a810_cp.h
+new file mode 100644
+index 0000000..54e6c53
+--- /dev/null
++++ b/bsd/dev/sweet_a810_cp.h
+@@ -0,0 +1,68 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Nothing Phone (3a) "asteroids": the Adreno 810 command processor ring, CP init, power-up list and PM4 headers
++ * (stages 14-16 of sweet_a810.c and sweet_a810_api.h).
++ *
++ * Ported from (MIT):
++ *   NativeAdreno, branch asteroids 60f16a6 (Copyright (c) 2026 NativeAdreno contributors): NativeAdrenoRing.cpp/.h
++ *     (attach, submit, submitFramed with the A7XX/A8XX prologue and framed fence, wait, observeFence, kick),
++ *     NativeAdrenoCpInit.cpp/.h (a8xx_cp_init's CP_THREAD_CONTROL + CP_ME_INIT), NativeAdrenoPwrup.cpp/.h (buildA810,
++ *     a8xx_patch_pwrup_reglist), NativeAdrenoRegisters.h (the gen8 table: fence scratch, SRAM init registers);
++ *   rootstockos AdrenoPM4 (282606b; Copyright (c) 2026 AdrenoPM4 contributors): AdrenoPM4Type4/Type7.
++ * C instead of C++ classes, gen8 only, no ring log or IRQ sleep. Register numbers are dword indices (the caller's I/O
++ * multiplies by four). Ring, memptrs and the lists live in Normal non-cacheable memory on both sides (the GPU pool's
++ * write-combined mapping), so publication is ordering only (dsb sy).
++ */
++#ifndef SWEET_A810_CP_H
++#define SWEET_A810_CP_H
++#include <stdint.h>
++#include <stddef.h>
++
++/* AdrenoPM4: 0 on success. TYPE4: 18-bit register, 1..127 values; TYPE7: 7-bit opcode, 0..16383 values. */
++int a810_pm4_type4(uint32_t reg, uint32_t count, uint32_t *header);
++int a810_pm4_type7(uint32_t opcode, uint32_t count, uint32_t *header);
++
++struct a810_cp_io {
++	void *cookie;
++	int (*write32)(void *, uint32_t reg, uint32_t value);    /* 0 on a completed access */
++	int (*read32)(void *, uint32_t reg, uint32_t *value);
++	int (*barrier)(void *);
++};
++/* NativeAdrenoRingFence */
++enum {A810_FENCE_DONE, A810_FENCE_TIMEOUT, A810_FENCE_POISONED, A810_FENCE_ARGUMENT};
++/* Ring error codes (IOReturn folded): 0 ok, else one of these. */
++enum {A810_RING_OK, A810_RING_ARGUMENT, A810_RING_BUSY, A810_RING_IO, A810_RING_NOT_READY, A810_RING_NO_SPACE};
++struct a810_ring {
++	struct a810_cp_io io;
++	volatile uint32_t *ring, *fence;
++	size_t ring_bytes, fence_bytes;
++	uint64_t ring_iova, fence_iova;
++	uint32_t next, rptr_shadow, seqno, completed, submissions;
++	int attached, poisoned, reset_pending;
++	uint32_t wptr_writes;
++};
++/* The fence page (msm_rbmemptrs): +0 CP RPTR shadow, +4 ring timestamp, +8 BV RPTR shadow, +12 BV timestamp. Programs
++ * CP_RB_BASE, CP_RB_CNTL (32 KiB ring, 32-byte blocks: 0x20c), CP_RB_RPTR_ADDR, CP_RB_WPTR 0 and the fence scratch. */
++int a810_ring_attach(struct a810_ring *, const struct a810_cp_io *, volatile void *ring, size_t ring_bytes, uint64_t ring_iova,
++    volatile void *fence, size_t fence_bytes, uint64_t fence_iova);
++/* Kernel packets with the plain fence (CP init and the bring-up packets). */
++int a810_ring_submit(struct a810_ring *, const uint32_t *words, size_t count, uint32_t *fence);
++/* User command buffers with a7xx_submit's BR/BV framing; the first after a810_ring_request_reset carries the context entry. */
++int a810_ring_submit_framed(struct a810_ring *, const uint32_t *words, size_t count, uint32_t *fence);
++void a810_ring_request_reset(struct a810_ring *);
++/* Polls the CP-written timestamp; `idle` (may be NULL) runs between polls. Timeout is not poison. */
++int a810_ring_wait(struct a810_ring *, uint32_t fence, uint64_t (*now_us)(void), void (*idle)(void), uint32_t timeout_us,
++    uint32_t *observed);
++/* The CP-written timestamp now (no waiting, no accounting). */
++uint32_t a810_ring_observed(const struct a810_ring *);
++int a810_ring_kick(struct a810_ring *);
++
++/* a8xx_cp_init: CP_THREAD_CONTROL (concurrent binning off), CP_ME_INIT (mask 0x14b, 3 contexts, 0x20000000, mode 2, the
++ * power-up list, BIT(31)). The SQE base is read back and compared (hw_init wrote it before CP_SQE_CNTL). */
++int a810_cp_init(struct a810_ring *, uint64_t sqe_iova, uint64_t pwrup_iova, uint32_t *fence);
++
++/* a8xx_patch_pwrup_reglist: the IFPC and preemption registers read directly, then one {PIPEID << 12, offset, value}
++ * triplet per pipe BR..DDE_BV in each dynamic entry's pipe mask, read with CP_APERTURE_CNTL_HOST selecting that pipe.
++ * The aperture is cleared again on every exit. `out` is the pwrup page (volatile 32-bit stores only). */
++int a810_pwrup_build(const struct a810_cp_io *, volatile uint32_t *out, size_t capacity, size_t *written);
++#endif
+diff --git a/bsd/dev/sweet_a810_smmu.c b/bsd/dev/sweet_a810_smmu.c
+index d12bf7d..6bdcaed 100644
+--- a/bsd/dev/sweet_a810_smmu.c
++++ b/bsd/dev/sweet_a810_smmu.c
+@@ -1,13 +1,15 @@
+ /* SPDX-License-Identifier: MIT */
+ /*
+- * Nothing Phone (3a) "asteroids": the GMU's own SMMU context (Adreno 810 bring-up, mode 5). See sweet_a810_smmu.h.
++ * Nothing Phone (3a) "asteroids": the GMU's own SMMU context (Adreno 810 bring-up, mode 5) and the GPU's (mode 12), with
++ * the map/unmap the later stages and sweet_a810_api.h use. See sweet_a810_smmu.h.
+  *
+  * Ported from (MIT):
+  *   rootstockos ArmSmmu4K (Copyright (c) 2026 ArmSmmu4K contributors): ArmSmmu4KContext.c (EncodeContext,
+  *     ValidateContextReadback), ArmSmmu4KProgram.c (ProgramDisabledContext, ObserveOwnedContext, the TLB sync,
+  *     SynchronizeOwnedContext), ArmSmmu4KStreams.c (AttachStreams, ObserveStreams), ArmSmmu4KLive.c (layout, walk,
+  *     descriptor: the fixed native4K topology LivePrepare builds and LiveAudit checks), ArmSmmu4KMmio.c;
+- *   NativeAdreno, branch asteroids 60f16a6 (Copyright (c) 2026 NativeAdreno contributors): NativeAdrenoGmuContext.cpp
++ *   NativeAdreno, branch asteroids 60f16a6 (Copyright (c) 2026 NativeAdreno contributors): NativeAdrenoGpuContext.cpp/.h
++ *     (the GPU's kernel buffers, their GPU addresses and permissions, the same bring-up), NativeAdrenoGmuContext.cpp
+  *     (bringUp: allocate, prepare, program, attach, VM attach, map, ready), NativeAdrenoGmuMemory.cpp (adopt: the payload
+  *     sizes, their order in the pool and their fixed GMU addresses; the map permissions), NativeAdrenoSmmuContext.cpp
+  *     (the context configuration: coherent walk, no stall, continue after fault), NativeAdrenoSmmuMemory.cpp.
+@@ -785,49 +787,95 @@ failed:
+ 	return status;
+ }
+ 
+-/* ---- The GMU context (NativeAdrenoGmuContext::bringUp, NativeAdrenoGmuAllocator::adopt) ---- */
+-static struct {
++/* ---- One context bank on the pool (NativeAdrenoGmuContext::bringUp / NativeAdrenoGpuContext::bringUp) ---- */
++struct a810_ctx {
+ 	int used, ready;
+ 	struct smmu_io io;
++	unsigned bank, asid;
+ 	struct live_arena arena;
+ 	struct tbl_result tables;
+ 	struct tbl_config config_lower;
+ 	struct ctx_config config;
+ 	struct stream_state streams;
+-	struct a810_gmu_payload payload[A810_PAYLOADS];
+-} gmu_ctx;
++	uint64_t context_offset;
++	uint64_t pool_used;
++	unsigned payload_count;
++	struct a810_gmu_payload payload[A810_GPU_BUFFERS > A810_PAYLOADS ? A810_GPU_BUFFERS : A810_PAYLOADS];
++};
++static struct a810_ctx gmu_ctx, gpu_ctx;
+ 
+-int
+-a810_gmu_context_payloads(struct a810_gmu_payload out[A810_PAYLOADS])
++/* Write the leaves of `ranges` (each entirely invalid before when map, entirely valid when unmap; an unmap's physical
++ * address and permissions are not used), then dsb sy and read every changed leaf back. No TLB maintenance here. */
++static int
++ctx_write_leaves(struct a810_ctx *c, const struct tbl_range *ranges, size_t count, int map)
+ {
+-	if (!out || !gmu_ctx.ready) {
+-		return 1;
++	for (size_t i = 0; i < count; ++i) {
++		const struct tbl_range *r = &ranges[i];
++		if (!r->bytes || ((r->iova | r->physical | r->bytes) & 4095) || (map && !(r->permissions & PERM_READ)) ||
++		    (r->permissions & ~15u) || r->iova >= c->arena.iova + c->arena.bytes ||
++		    r->bytes > c->arena.iova + c->arena.bytes - r->iova ||
++		    r->physical >= (UINT64_C(1) << c->config_lower.output_bits) ||
++		    (r->physical < c->config_lower.table_physical + c->tables.table_pages * PAGE_4K &&
++		    c->config_lower.table_physical < r->physical + r->bytes)) {
++			return BadRange;
++		}
++		for (uint64_t off = 0; off < r->bytes; off += PAGE_4K) {
++			size_t index;
++			int status = live_leaf_index(&c->arena, &c->tables, r->iova + off, &index);
++			if (status) {
++				return status;
++			}
++			if (map ? c->arena.mapping[index] != 0 : c->arena.mapping[index] == 0) {
++				return StateMismatch;
++			}
++		}
+ 	}
+-	for (unsigned i = 0; i < A810_PAYLOADS; ++i) {
+-		out[i] = gmu_ctx.payload[i];
++	for (size_t i = 0; i < count; ++i) {
++		for (uint64_t off = 0; off < ranges[i].bytes; off += PAGE_4K) {
++			size_t index;
++			(void)live_leaf_index(&c->arena, &c->tables, ranges[i].iova + off, &index);
++			c->arena.mapping[index] = map ? leaf_descriptor(&ranges[i], ranges[i].iova + off) : 0;
++		}
+ 	}
+-	return 0;
++	dsb_sy();
++	for (size_t i = 0; i < count; ++i) {
++		for (uint64_t off = 0; off < ranges[i].bytes; off += PAGE_4K) {
++			size_t index;
++			(void)live_leaf_index(&c->arena, &c->tables, ranges[i].iova + off, &index);
++			if (c->arena.mapping[index] != (map ? leaf_descriptor(&ranges[i], ranges[i].iova + off) : 0)) {
++				return StateMismatch;
++			}
++		}
++	}
++	return Ok;
+ }
+ 
+-int
+-a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t pool_pa, volatile uint8_t *pool_va,
+-    uint64_t pool_bytes, unsigned bank, unsigned asid, unsigned slot, unsigned sid, void (*progress)(uint32_t step),
+-    struct a810_gmu_context_report *report)
++/*
++ * The bring-up of either context: payloads laid out one after another from pool_pa (sizes[i] bytes each, at iovas[i] with
++ * perms[i]), then the 1027-page table pool; prepare, program, attach, observe, map, synchronise.
++ */
++static int
++ctx_bringup(struct a810_ctx *c, volatile uint8_t *smmu, size_t smmu_bytes, uint64_t pool_pa, volatile uint8_t *pool_va,
++    uint64_t pool_bytes, unsigned count, const uint64_t *sizes, const uint64_t *iovas, const unsigned *perms, unsigned bank,
++    unsigned asid, unsigned slot, unsigned sid, void (*progress)(uint32_t step), struct a810_gmu_context_report *report)
+ {
+ 	if (!report) {
+ 		return Argument;
+ 	}
+ 	*report = (struct a810_gmu_context_report){0};
+-	if (gmu_ctx.used) {
+-		return report->status = Busy;
++	if (c->used) {
++		return (int)(report->status = Busy);
+ 	}
+ 	if (!smmu || !smmu_bytes || ((uintptr_t)smmu & 7) || !pool_va || ((uintptr_t)pool_va & 4095) || (pool_pa & 4095) ||
+-	    bank > 63 || !asid || asid > 0xffff || slot > 127 || sid > 0xffff) {
+-		return report->status = Argument;
+-	}
+-	gmu_ctx.used = 1;
+-	gmu_ctx.io = (struct smmu_io){smmu, smmu_bytes};
+-	const struct smmu_io *io = &gmu_ctx.io;
++	    bank > 63 || !asid || asid > 0xffff || slot > 127 || sid > 0xffff || !count ||
++	    count > sizeof c->payload / sizeof c->payload[0]) {
++		return (int)(report->status = Argument);
++	}
++	c->used = 1;
++	c->io = (struct smmu_io){smmu, smmu_bytes};
++	c->bank = bank;
++	c->asid = asid;
++	const struct smmu_io *io = &c->io;
+ 	int status = Ok;
+ #define STEP(s) do {report->step = (s); if (progress) progress(s);} while (0)
+ 
+@@ -846,56 +894,56 @@ a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t poo
+ 			status = Unsupported;
+ 		}
+ 	}
+-	/* NativeAdrenoGmuDefaultSizes and adopt(): icache, dummy, debug, log, hfi, then the table pool, one after another in
+-	 * the reserved pool; the GMU addresses are allocate()'s. */
+-	static const uint64_t sizes[A810_PAYLOADS] = {0xffc000, 0x4000, 0x7000, 0x4000, 0x4000};
+-	const uint64_t iovas[A810_PAYLOADS] = {A810_GMU_ICACHE_IOVA, A810_GMU_UNCACHED_IOVA, A810_GMU_DEBUG_IOVA,
+-		                               A810_GMU_UNCACHED_IOVA + 0x4000, A810_GMU_UNCACHED_IOVA + 0x4000 + 0x4000};
+ 	uint64_t at = 0;
+ 	if (!status) {
+ 		uint64_t used = (uint64_t)A810_GMU_TABLE_PAGES * PAGE_4K;
+-		for (unsigned i = 0; i < A810_PAYLOADS; ++i) {
++		for (unsigned i = 0; i < count; ++i) {
++			if (!sizes[i] || (sizes[i] & 4095) || (iovas[i] & 4095)) {
++				status = Argument;
++			}
+ 			used += sizes[i];
+ 		}
+ 		if (used > pool_bytes || pool_pa + used > (UINT64_C(1) << report->output_bits)) {
+ 			status = Capacity;
+ 		}
++		c->pool_used = used;
+ 	}
+ 	if (!status) {
+-		for (unsigned i = 0; i < A810_PAYLOADS; ++i) {
+-			gmu_ctx.payload[i] = (struct a810_gmu_payload){pool_pa + at, sizes[i], iovas[i],
+-				                                       (volatile uint32_t *)(uintptr_t)(pool_va + at)};
++		for (unsigned i = 0; i < count; ++i) {
++			c->payload[i] = (struct a810_gmu_payload){pool_pa + at, sizes[i], iovas[i],
++				                                  (volatile uint32_t *)(uintptr_t)(pool_va + at)};
+ 			at += sizes[i];
+ 		}
++		c->payload_count = count;
+ 	}
+ 	if (!status) {
+ 		STEP(A810_CTX_PREPARE);
+-		gmu_ctx.config_lower = (struct tbl_config){32, report->output_bits, pool_pa + at, (size_t)1 << 19};
+-		gmu_ctx.arena = (struct live_arena){gmu_ctx.config_lower, 0, A810_GMU_APERTURE,
+-			                            (volatile uint64_t *)(uintptr_t)(pool_va + at), A810_GMU_TABLE_PAGES};
+-		status = live_layout(&gmu_ctx.arena, &gmu_ctx.tables);
++		c->config_lower = (struct tbl_config){32, report->output_bits, pool_pa + at, (size_t)1 << 19};
++		c->arena = (struct live_arena){c->config_lower, 0, A810_GMU_APERTURE,
++			                       (volatile uint64_t *)(uintptr_t)(pool_va + at), A810_GMU_TABLE_PAGES};
++		status = live_layout(&c->arena, &c->tables);
+ 		if (!status) {
+ 			size_t next = 1;
+-			status = live_walk(&gmu_ctx.arena, &gmu_ctx.tables, gmu_ctx.tables.start_level, 0, 0, &next, 1, NULL, 0, NULL);
+-			if (!status && next != gmu_ctx.tables.table_pages) {
++			status = live_walk(&c->arena, &c->tables, c->tables.start_level, 0, 0, &next, 1, NULL, 0, NULL);
++			if (!status && next != c->tables.table_pages) {
+ 				status = StateMismatch;
+ 			}
+ 		}
+ 		dsb_sy();                      /* publish the tables (Normal non-cacheable pool) */
+ 		if (!status) {
+ 			size_t next = 1;
+-			status = live_walk(&gmu_ctx.arena, &gmu_ctx.tables, gmu_ctx.tables.start_level, 0, 0, &next, 0, NULL, 0, NULL);
+-			if (!status && next != gmu_ctx.tables.table_pages) {
++			status = live_walk(&c->arena, &c->tables, c->tables.start_level, 0, 0, &next, 0, NULL, 0, NULL);
++			if (!status && next != c->tables.table_pages) {
+ 				status = StateMismatch;
+ 			}
+ 		}
+ 		/* The adreno SMMU node is dma-coherent, so walks are inner write-back (NativeAdrenoSmmuContext::prepare). */
+-		gmu_ctx.config = (struct ctx_config){&gmu_ctx.config_lower, &gmu_ctx.tables, 0, 0, asid, 1, 0, 1};
++		c->config = (struct ctx_config){&c->config_lower, &c->tables, 0, 0, asid, 1, 0, 1};
+ 	}
+ 	struct program_result program = {0};
+ 	if (!status) {
+ 		STEP(A810_CTX_PROGRAM);
+-		status = program_disabled_context(io, bank, &gmu_ctx.config, 1000, &program);
++		status = program_disabled_context(io, bank, &c->config, 1000, &program);
+ 		report->program_status = (uint32_t)status;
+ 		report->program_phase = program.phase;
+ 		report->program_writes = program.writes;
+@@ -903,7 +951,7 @@ a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t poo
+ 		report->program_enabled = program.enabled;
+ 		report->id1 = program.id1;
+ 		report->image = program.readback;
+-		struct ctx_config actual = gmu_ctx.config;
++		struct ctx_config actual = c->config;
+ 		struct a810_smmu_image want;
+ 		actual.id0 = program.id0;
+ 		actual.id2 = program.id2;
+@@ -915,15 +963,16 @@ a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t poo
+ 			    (got->ttbr0 != want.ttbr0) << 6 | (got->ttbr1 != want.ttbr1) << 7 | (got->sctlr != sctlr_want) << 8;
+ 		}
+ 		if (!status) {
+-			gmu_ctx.config.id0 = program.id0;
+-			gmu_ctx.config.id2 = program.id2;
++			c->config.id0 = program.id0;
++			c->config.id2 = program.id2;
++			c->context_offset = program.context_offset;
+ 		}
+ 	}
+ 	if (!status) {
+ 		STEP(A810_CTX_ATTACH);
+ 		const struct stream route = {slot, (uint16_t)sid};
+ 		struct stream_result routes;
+-		status = streams_attach(io, &gmu_ctx.streams, &route, bank, &gmu_ctx.config, &routes);
++		status = streams_attach(io, &c->streams, &route, bank, &c->config, &routes);
+ 		report->route_status = (uint32_t)status;
+ 		report->route_phase = routes.phase;
+ 		report->route_writes = routes.writes;
+@@ -933,55 +982,30 @@ a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t poo
+ 		/* NativeAdrenoVm::attach observes the owned context and routes before the first map. */
+ 		STEP(A810_CTX_OBSERVE);
+ 		struct stream_result seen;
+-		status = streams_observe(io, &gmu_ctx.streams, &gmu_ctx.config, &seen);
++		status = streams_observe(io, &c->streams, &c->config, &seen);
+ 	}
+ 	if (!status) {
+-		/* NativeAdrenoGmuAllocator::mapInto: every payload read/write, Normal non-cacheable (AttrIndx 0), outer
+-		 * shareable; only the icache, which the GMU executes, is executable and privileged. */
++		/* Every payload Normal non-cacheable (AttrIndx 0), outer shareable, with the caller's permissions. */
+ 		STEP(A810_CTX_MAP);
+-		struct tbl_range ranges[A810_PAYLOADS];
+-		/* sorted by GMU address: icache, dummy, log, hfi, debug */
+-		static const unsigned order[A810_PAYLOADS] = {A810_PAYLOAD_ICACHE, A810_PAYLOAD_DUMMY, A810_PAYLOAD_LOG,
+-			                                      A810_PAYLOAD_HFI, A810_PAYLOAD_DEBUG};
+-		for (unsigned i = 0; i < A810_PAYLOADS; ++i) {
+-			const struct a810_gmu_payload *p = &gmu_ctx.payload[order[i]];
+-			ranges[i] = (struct tbl_range){p->iova, p->physical, p->bytes,
+-				                       order[i] == A810_PAYLOAD_ICACHE ? 15u : 3u, 0, 2};
+-		}
+-		for (unsigned i = 0; i < A810_PAYLOADS && !status; ++i) {
+-			for (uint64_t off = 0; off < ranges[i].bytes && !status; off += PAGE_4K) {
+-				size_t index;
+-				status = live_leaf_index(&gmu_ctx.arena, &gmu_ctx.tables, ranges[i].iova + off, &index);
+-				if (!status && gmu_ctx.arena.mapping[index]) {
+-					status = StateMismatch;          /* a map wants an entirely invalid range */
+-				}
+-			}
++		struct tbl_range ranges[sizeof c->payload / sizeof c->payload[0]];
++		for (unsigned i = 0; i < count; ++i) {
++			ranges[i] = (struct tbl_range){c->payload[i].iova, c->payload[i].physical, c->payload[i].bytes, perms[i], 0, 2};
+ 		}
+-		for (unsigned i = 0; i < A810_PAYLOADS && !status; ++i) {
+-			for (uint64_t off = 0; off < ranges[i].bytes && !status; off += PAGE_4K) {
+-				size_t index;
+-				status = live_leaf_index(&gmu_ctx.arena, &gmu_ctx.tables, ranges[i].iova + off, &index);
+-				if (!status) {
+-					gmu_ctx.arena.mapping[index] = leaf_descriptor(&ranges[i], ranges[i].iova + off);
+-				}
+-			}
+-		}
+-		dsb_sy();
++		status = ctx_write_leaves(c, ranges, count, 1);
+ 		if (!status) {
+ 			size_t next = 1;
+-			status = live_walk(&gmu_ctx.arena, &gmu_ctx.tables, gmu_ctx.tables.start_level, 0, 0, &next, 0, ranges,
+-			    A810_PAYLOADS, &report->leaves);
++			status = live_walk(&c->arena, &c->tables, c->tables.start_level, 0, 0, &next, 0, ranges, count, &report->leaves);
+ 		}
+ 		if (!status) {
+ 			struct program_result sync;
+-			status = synchronize_owned_context(io, bank, &gmu_ctx.config, 4000, &sync);
++			status = synchronize_owned_context(io, bank, &c->config, 4000, &sync);
+ 			report->tlb_polls = sync.poll_reads;
+ 		}
+ 		report->map_status = (uint32_t)status;
+ 	}
+ 	if (!status) {
+ 		STEP(A810_CTX_READY);
+-		gmu_ctx.ready = 1;
++		c->ready = 1;
+ 	}
+ #undef STEP
+ 	report->status = (uint32_t)status;
+@@ -998,4 +1022,114 @@ a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t poo
+ 	io_read32(io, 0x48, &report->gfsr);
+ 	return status;
+ }
++
++int
++a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t pool_pa, volatile uint8_t *pool_va,
++    uint64_t pool_bytes, unsigned bank, unsigned asid, unsigned slot, unsigned sid, void (*progress)(uint32_t step),
++    struct a810_gmu_context_report *report)
++{
++	/* NativeAdrenoGmuDefaultSizes and adopt(): icache, dummy, debug, log, hfi in the pool, at allocate()'s GMU addresses;
++	 * mapInto(): read/write, only the icache (which the GMU executes) executable and privileged. */
++	static const uint64_t sizes[A810_PAYLOADS] = {0xffc000, 0x4000, 0x7000, 0x4000, 0x4000};
++	static const uint64_t iovas[A810_PAYLOADS] = {A810_GMU_ICACHE_IOVA, A810_GMU_UNCACHED_IOVA, A810_GMU_DEBUG_IOVA,
++		                                      A810_GMU_UNCACHED_IOVA + 0x4000, A810_GMU_UNCACHED_IOVA + 0x8000};
++	static const unsigned perms[A810_PAYLOADS] = {15u, 3u, 3u, 3u, 3u};
++	return ctx_bringup(&gmu_ctx, smmu, smmu_bytes, pool_pa, pool_va, pool_bytes, A810_PAYLOADS, sizes, iovas, perms, bank,
++	           asid, slot, sid, progress, report);
++}
++
++int
++a810_gmu_context_payloads(struct a810_gmu_payload out[A810_PAYLOADS])
++{
++	if (!out || !gmu_ctx.ready) {
++		return 1;
++	}
++	for (unsigned i = 0; i < A810_PAYLOADS; ++i) {
++		out[i] = gmu_ctx.payload[i];
++	}
++	return 0;
++}
++
++uint64_t
++a810_gmu_context_pool_used(void)
++{
++	return gmu_ctx.ready ? gmu_ctx.pool_used : 0;
++}
++
++int
++a810_gpu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t pool_pa, volatile uint8_t *pool_va,
++    uint64_t pool_bytes, unsigned bank, unsigned asid, unsigned slot, unsigned sid, void (*progress)(uint32_t step),
++    struct a810_gmu_context_report *report)
++{
++	/* NativeAdrenoGpuContext.h: sqe 128 KiB R+X (adreno_fw_create_bo maps it read-only, without NOEXEC), ring 32 KiB,
++	 * memptrs, pwrup and scratch one page each, read/write. */
++	static const uint64_t sizes[A810_GPU_BUFFERS] = {0x20000, 0x8000, 0x1000, 0x1000, 0x1000};
++	static const uint64_t iovas[A810_GPU_BUFFERS] = {A810_GPU_SQE_IOVA, A810_GPU_RING_IOVA, A810_GPU_MEMPTRS_IOVA,
++		                                         A810_GPU_PWRUP_IOVA, A810_GPU_SCRATCH_IOVA};
++	static const unsigned perms[A810_GPU_BUFFERS] = {5u, 3u, 3u, 3u, 3u};
++	return ctx_bringup(&gpu_ctx, smmu, smmu_bytes, pool_pa, pool_va, pool_bytes, A810_GPU_BUFFERS, sizes, iovas, perms,
++	           bank, asid, slot, sid, progress, report);
++}
++
++int
++a810_gpu_context_buffers(struct a810_gmu_payload out[A810_GPU_BUFFERS], uint64_t *pool_used)
++{
++	if (!out || !gpu_ctx.ready) {
++		return 1;
++	}
++	for (unsigned i = 0; i < A810_GPU_BUFFERS; ++i) {
++		out[i] = gpu_ctx.payload[i];
++	}
++	if (pool_used) {
++		*pool_used = gpu_ctx.pool_used;
++	}
++	return 0;
++}
++
++/* Map or unmap one physically contiguous run in the GPU context, then TLBIASID + TLBSYNC on its bank (a map changes only
++ * invalid leaves, but the sync costs one register round trip and keeps the rule simple). Callers serialise. */
++static int
++gpu_update(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot, int map)
++{
++	if (!gpu_ctx.ready) {
++		return Busy;
++	}
++	unsigned perms = PERM_READ | ((prot & A810_GPU_PROT_WRITE) ? PERM_WRITE : 0u) |
++	    ((prot & A810_GPU_PROT_EXEC) ? PERM_EXECUTE : 0u);
++	const struct tbl_range range = {iova, pa, bytes, perms, 0, 2};
++	int status = ctx_write_leaves(&gpu_ctx, &range, 1, map);
++	if (status) {
++		return status;
++	}
++	struct program_result r = {0};
++	return sync_tlb(&gpu_ctx.io, (size_t)gpu_ctx.context_offset, gpu_ctx.asid, 0, 4000, &r);
++}
++
++int
++a810_gpu_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot)
++{
++	return gpu_update(iova, pa, bytes, prot, 1);
++}
++
++int
++a810_gpu_unmap(uint64_t iova, uint64_t bytes)
++{
++	return gpu_update(iova, 0, bytes, 0, 0);
++}
++
++/* The GPU bank's fault registers for the logs: FSR, FAR (lo, hi), FSYNR0, ACTLR. */
++void
++a810_gpu_context_faults(uint32_t out[5])
++{
++	for (unsigned i = 0; i < 5; ++i) {
++		out[i] = 0;
++	}
++	if (!gpu_ctx.used || !gpu_ctx.context_offset) {
++		return;
++	}
++	static const unsigned regs[5] = {0x58, 0x60, 0x64, 0x68, 0x4};
++	for (unsigned i = 0; i < 5; ++i) {
++		io_read32(&gpu_ctx.io, (size_t)gpu_ctx.context_offset + regs[i], &out[i]);
++	}
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_a810_smmu.h b/bsd/dev/sweet_a810_smmu.h
+index 5e0172c..43b4eb3 100644
+--- a/bsd/dev/sweet_a810_smmu.h
++++ b/bsd/dev/sweet_a810_smmu.h
+@@ -1,11 +1,12 @@
+ /* SPDX-License-Identifier: MIT */
+ /*
+- * Nothing Phone (3a) "asteroids": the GMU's own SMMU context on the GPU SMMU (Adreno 810 bring-up, mode 5).
++ * Nothing Phone (3a) "asteroids": the GMU's own SMMU context on the GPU SMMU (Adreno 810 bring-up, mode 5) and the GPU's
++ * own context (mode 12).
+  *
+  * Ported from (MIT, Copyright (c) 2026 NativeAdreno contributors / ArmSmmu4K contributors):
+  *   rootstockos ArmSmmu4K: ArmSmmu4KContext.c, ArmSmmu4KProgram.c, ArmSmmu4KStreams.c, ArmSmmu4KLive.c (the fixed
+  *     native4K table topology of ArmSmmu4KLivePrepare and its leaf descriptor), ArmSmmu4KMmio.c;
+- *   NativeAdreno (branch asteroids, 60f16a6): NativeAdrenoGmuContext.cpp/.h, NativeAdrenoGmuMemory.cpp/.h,
++ *   NativeAdreno (branch asteroids, 60f16a6): NativeAdrenoGmuContext.cpp/.h, NativeAdrenoGpuContext.cpp/.h, NativeAdrenoGmuMemory.cpp/.h,
+  *     NativeAdrenoSmmuContext.cpp, NativeAdrenoSmmuMemory.cpp (the bring-up order and the pool layout).
+  * C only, for this kernel: the payloads and the table pool are carved out of the reserved GMU pool, which the caller
+  * maps write-combined; every SMMU register access is a volatile 32-bit load/store followed by dsb sy (a 64-bit TTBR
+@@ -68,5 +69,32 @@ int a810_gmu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t
+     struct a810_gmu_context_report *report);
+ /* The five payloads of the context the bring-up built (icache, dummy, debug, log, hfi), only after it reached Ready. */
+ int a810_gmu_context_payloads(struct a810_gmu_payload out[A810_PAYLOADS]);
++/* Bytes of the GMU pool the GMU context uses from its base (payloads, then the table pool); 0 before Ready. */
++uint64_t a810_gmu_context_pool_used(void);
++
++/* The GPU's own context (mode 12), the same way on the GPU pool: the kernel buffers of NativeAdrenoGpuContext.h at their
++ * fixed GPU addresses (sqe 128 KiB R+X, ring 32 KiB, memptrs, pwrup, scratch one page each R+W), then the table pool.
++ * Lower (TTBR0) region 0..2 GiB, as NativeAdrenoGpuContext builds it; the upper region stays disabled (EPD1). */
++#define A810_GPU_SQE_IOVA       0x100000ULL
++#define A810_GPU_RING_IOVA      0x200000ULL
++#define A810_GPU_MEMPTRS_IOVA   0x300000ULL
++#define A810_GPU_PWRUP_IOVA     0x301000ULL
++#define A810_GPU_SCRATCH_IOVA   0x302000ULL
++enum {A810_GPU_SQE, A810_GPU_RING, A810_GPU_MEMPTRS, A810_GPU_PWRUP, A810_GPU_SCRATCH, A810_GPU_BUFFERS};
++int a810_gpu_context_bringup(volatile uint8_t *smmu, size_t smmu_bytes, uint64_t pool_pa, volatile uint8_t *pool_va,
++    uint64_t pool_bytes, unsigned bank, unsigned asid, unsigned slot, unsigned sid, void (*progress)(uint32_t step),
++    struct a810_gmu_context_report *report);
++/* The five buffers (cpu inside the caller's pool mapping) and the bytes of the pool the context uses from its base. */
++int a810_gpu_context_buffers(struct a810_gmu_payload out[A810_GPU_BUFFERS], uint64_t *pool_used);
++/* Map / unmap a physically contiguous, 4 KiB aligned run at a 4 KiB aligned GPU address in the ready GPU context
++ * (Normal non-cacheable, outer shareable), then TLBIASID + TLBSYNC. A map needs every leaf invalid, an unmap every leaf
++ * valid; nothing is changed otherwise. Not thread-safe: the caller serialises. 0 or an ArmSmmu4KStatus. */
++#define A810_GPU_PROT_READ      1u
++#define A810_GPU_PROT_WRITE     2u
++#define A810_GPU_PROT_EXEC      4u
++int a810_gpu_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot);
++int a810_gpu_unmap(uint64_t iova, uint64_t bytes);
++/* The GPU bank's FSR, FAR lo, FAR hi, FSYNR0 and ACTLR (zeros before the bank was programmed). */
++void a810_gpu_context_faults(uint32_t out[5]);
+ const char *a810_smmu_status_text(uint32_t status);
+ #endif

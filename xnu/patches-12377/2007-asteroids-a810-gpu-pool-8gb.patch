@@ -1,0 +1,41 @@
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index fb09dcf..c76d863 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -22,7 +22,7 @@
+  *   9  8, and the GMU firmware (ADT /sweet-gpu "gmu-firmware") loaded, CM3 released, HFI ready awaited
+  *  10  9 as the whole cold start: the HFI startup messages (GPU_PERF table, bandwidth table, core start, start)
+  *  11  10, and GX on: HFI GX_BW_PERF_VOTE at sweeta810level, OOB GPU_SET, then RBBM_STATUS and friends
+- *  12  11, and the survey (SW fuse, CP/RBBM registers), ACTLR 0x32b on bank 0, the GPU pool (0xABFE00000, first 64 MiB
++ *  12  11, and the survey (SW fuse, CP/RBBM registers), ACTLR 0x32b on bank 0, the GPU pool (0x9F4000000, first 64 MiB
+  *      mapped write-combined and pattern-tested), the GPU's SMMU context there (bank 0, ASID 2, SID 0 on slot 0) with
+  *      the kernel buffers, and the SQE (ADT "sqe-firmware" minus its first dword)
+  *  13  12, and a8xx hw_init's register writes (gpb_hw_init); the GPU block is written from here on
+@@ -844,7 +844,7 @@ static uint32_t a810_cb0;              /* the GPU bank's offset in the SMMU */
+ static LCK_GRP_DECLARE(a810_lck_grp, "sweet_a810");
+ static LCK_MTX_DECLARE(a810_lck, &a810_lck_grp);
+ 
+-#define A810_GPU_POOL_MAPPED    0x4000000ULL    /* the part of the 1 GiB GPU pool this kernel maps and uses: 64 MiB */
++#define A810_GPU_POOL_MAPPED    0x4000000ULL    /* the part of the 128 MiB GPU pool this kernel maps and uses: 64 MiB */
+ #define A810_FENCE_TIMEOUT_US   200000u
+ static const char *const a810_fence_text[] = {"done", "timeout", "poisoned", "argument"};
+ 
+diff --git a/bsd/dev/sweet_a810_board.h b/bsd/dev/sweet_a810_board.h
+index 0b03d95..aafb589 100644
+--- a/bsd/dev/sweet_a810_board.h
++++ b/bsd/dev/sweet_a810_board.h
+@@ -1033,8 +1033,12 @@ static inline void gpb_bar_fill(const struct gpb_bar *b, uint32_t header, uint64
+ // 128 MiB ran out at the Metal runtime's 64 MiB blocks, and XNU's window has no such contiguous run. The probe maps it whole
+ // and halves the size down to 128 MiB if the map fails (pandora's 1 GiB in one ml_io_map panicked; ours is an IOKit map);
+ // board.toml [gpu] gpu_pool_* must match.
+-#define GPB_GPU_POOL_BASE 0xABFE00000ULL
+-#define GPB_GPU_POOL_BYTES 0x40000000ULL
++// Bergamota asteroids (8 GB phone, 2026-10-28): its DDR ends at 0x9ffffefff (recovery /proc/iomem: System RAM
++// 0x8bf800000-0x9ffffefff), so 0xABFE00000 is not RAM here: mapping it raised an SError (boot ast5-gpu, right after
++// "next: GPU pool"). The pool is the top of the bank XNU leaves free instead: XNU's window is 0x8c0000000 +
++// 0x134000000 (tools/mkadt.py asteroids), the shim loads nothing above it, reserved-memory has no static region there.
++#define GPB_GPU_POOL_BASE 0x9F4000000ULL
++#define GPB_GPU_POOL_BYTES 0x8000000ULL
+ // The client-visible facts for the A810, each from a pinned source: chip id, GMEM 576 KiB from NativeAdrenoProfile's
+ // a810 entry (mainline a6xx_catalog.c); GMEM window and trap base from mode 13's writes; UBWC from milos_data (UBWC 4.0,
+ // highest bank bit 15, level 2 swizzling only). The VA window is uke's: clear of the kernel buffers, the bar's maps and

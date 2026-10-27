@@ -89,6 +89,12 @@
     on asteroids. Clock: no offset file yet (fallback = build time, 2026-06-17).
   * CI run 40576515908 SUCCESS (2000-2006, A810_LOG sync) -> research/ios26/kernel-ast5. Images ios26-ast5
     (sweetpanel=2 sweetcpufreq=gov sweeta810=4) and ios26-ast5-gpu (sweeta810=16, for the SError hunt). ast5 booted.
+  * ast5-gpu (log logs/ast5-gpu, A810_LOG synced): GMU OK through stage 11: cmd-db/HFI tables, GMU clocks (PLL0 lock),
+    GMU firmware sha matches the pin, cold start + HFI startup acked, perf vote level 6 (763 MHz), OOB GPU_SET:
+    "GX on, RBBM_STATUS 0x1"; stage 12 survey and GPU SMMU ACTLR 0x32b. SError right after "next: GPU pool
+    0xabfe00000": rootstockos's pool is on a 12 GB phone (RAM to 0xaffffefff); this phone has 8 GB, recovery
+    /proc/iomem System RAM 0x8bf800000-0x9ffffefff, no static reserved-memory above 4 GiB. 2007: GPU pool at
+    0x9F4000000, 128 MiB (the top of the bank XNU's ADT window 0x8c0000000+0x134000000 leaves free).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

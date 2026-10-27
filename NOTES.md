@@ -21,6 +21,11 @@
   (`asteroids/build-boot.sh research/ios26/kernel-ast/kernel.development.sweet ios26-ast1`). No USB on asteroids
   (sweet_usb is off): no SSH/log over USB; the persistent log is the last 4 MiB of userdata. Userdata holds iOS
   again: never let the phone boot Android.
+* **Lock screen on iOS 26 (user, 2026-10-27).** Then `xnu/patches-12377/2001-asteroids-touch-keys.patch`: the user's
+  FocalTech-over-GPI driver from ios-sweet 0084 (`bsd/dev/sweet_touch_asteroids.c`, byte-identical) + bsd/conf/files +
+  start on asteroids (Bergamota's SweetHIDTouch already maps panel -> canvas, so 0084's SweetHID hunk is not needed);
+  sweet_keys.c with ios-sweet 0083's asteroids values (arbiter v7 layout, PON 0x013 RT 0x1310 bits 7/6, vol-up GPIO
+  0x18d, AI key TLMM 71 -> Menu/Home). Applies after 2000 (local git apply); CI pending.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 

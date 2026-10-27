@@ -115,6 +115,17 @@
     FBLaunchWatchdogScale 20 + BSUIVibrancyEffectViewDisabled, frontboard FBLaunchWatchdogScale 20, QUIET_THROTTLE for
     photoanalysisd/homed/routined/duetexpertd/dmd/syncdefaultsd/avconferenced/bird (SWEET_QUIET=1). Not done: snapshot
     JPEG hook (an arm64e dylib, Mac build), mediaserverd prewarm (no mediaserverd crash in our logs).
+  * **ast6p-gpu (kernel 2000-2007, CI artifact "xnu-kernel (5)", 2026-10-28): EVERY GPU STAGE PASSES.** Log
+    logs/ast6p-gpu: GPU pool 0x9F4000000 64 MiB clean; GPU SMMU bank 0 ASID 2 ok; SQE copied (sha 046f5aea); hw_init
+    203 writes; CP_ME_INIT fence 1, CP_MEM_WRITE fence 2; zap PAS 13 init_image/mem_setup/auth_and_reset status 0,
+    CP_SET_SECURE_MODE 0 fence 3; first IB fence 4; the GPU drew the bar (fence 5, pixels ok), seen on the panel by the
+    user; iOS reached the lock screen afterwards.
+  * 2009 (not built yet): the msm user client on the A810. sweet_a630.c's sweet_gpu_* forward to sweet_a810_msm.c on
+    asteroids (first-fit GPU addresses in 0x20000000-0x80000000, page maps collected into contiguous runs at vm_flush,
+    a mapped-page bitmap so a remap replaces and an unmap skips holes, one submit_ib per IB, MSM params: CHIP_ID
+    0x44010000, GMEM 576 KiB at 0x100000, UBWC hbb 15 swizzle 2, TIMESTAMP = GMU AO counter). sweet_a810.c publishes
+    SweetAdreno630 (SweetGPUChipID from the param) after stage 16. No SMMU fault check / recovery yet. Userland:
+    Chlorophyll/Turnip needs an A810 (gen8) build on the Mac.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

@@ -1,0 +1,720 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index b1058ea..4f2f879 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -115,6 +115,7 @@ bsd/dev/sweet_a810_smmu.c		standard
+ bsd/dev/sweet_a810_hfi.c		standard
+ bsd/dev/sweet_a810_gmu.c		standard
+ bsd/dev/sweet_a810_cp.c			standard
++bsd/dev/sweet_a810_msm.c		standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_reboot.c			standard
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 80d8b31..a0ed691 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -66,6 +66,7 @@
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include "sweet_board.h"
++#include "sweet_a810_api.h"          /* asteroids: the A810 answers the sweet_gpu_* calls (sweet_a810_msm.c) */
+ 
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ /* osfmk/vm/pmap.h, MACH_KERNEL_PRIVATE */
+@@ -2605,6 +2606,9 @@ gvm_tlb_flush(void)
+ bool
+ sweet_gpu_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_iova_alloc(size, iova, taken);
++	}
+ 	uint64_t need = size + GVM_GUARD;
+ 
+ 	if (!a630_dev.ready || size == 0 || (size & 0xfff)) {
+@@ -2630,6 +2634,9 @@ sweet_gpu_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
+ bool
+ sweet_gpu_iova_reserve(uint64_t iova, uint64_t size)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_iova_reserve(iova, size);
++	}
+ 	if (!a630_dev.ready || size == 0 || (size & 0xfff) || (iova & 0xfff) || iova < GVM_BASE || iova + size > GVM_END) {
+ 		return false;
+ 	}
+@@ -2665,6 +2672,10 @@ sweet_gpu_iova_reserve(uint64_t iova, uint64_t size)
+ void
+ sweet_gpu_iova_free(uint64_t iova, uint64_t size)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_iova_free(iova, size);
++		return;
++	}
+ 	unsigned i = 0;
+ 
+ 	while (i < gvm_nfree && gvm_free[i].start < iova) {
+@@ -2698,6 +2709,9 @@ sweet_gpu_iova_free(uint64_t iova, uint64_t size)
+ bool
+ sweet_gpu_vm_map(uint64_t iova, uint64_t pa, bool readonly)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_vm_map(iova, pa, readonly);
++	}
+ 	volatile uint64_t *slot;
+ 
+ 	if (!a630_dev.ready || (pa & ~PA_MASK) || (iova & 0xfff) || !(slot = gvm_slot(iova, true))) {
+@@ -2712,6 +2726,10 @@ sweet_gpu_vm_map(uint64_t iova, uint64_t pa, bool readonly)
+ void
+ sweet_gpu_vm_flush(void)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_vm_flush();
++		return;
++	}
+ 	if (a630_dev.ready) {
+ 		gvm_tlb_flush();
+ 	}
+@@ -2725,6 +2743,9 @@ sweet_gpu_vm_flush(void)
+ bool
+ sweet_gpu_check_fault(void)
+ {
++	if (sweet_board_asteroids()) {
++		return false;   /* no SMMU fault check on the A810 yet */
++	}
+ 	vm_offset_t b;
+ 	uint32_t fsr;
+ 
+@@ -2754,6 +2775,10 @@ sweet_gpu_check_fault(void)
+ void
+ sweet_gpu_vm_unmap(uint64_t iova, uint64_t size)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_vm_unmap(iova, size);
++		return;
++	}
+ 	for (uint64_t d = 0; d < size; d += 0x1000) {
+ 		volatile uint64_t *slot = gvm_slot(iova + d, false);
+ 		if (slot && *slot) {
+@@ -2767,6 +2792,9 @@ sweet_gpu_vm_unmap(uint64_t iova, uint64_t size)
+ bool
+ sweet_gpu_ready(void)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_ready();
++	}
+ 	return a630_dev.ready && !a630_dev.lost;
+ }
+ 
+@@ -2781,6 +2809,9 @@ sweet_gpu_cache_sync(void *va, size_t len)
+ bool
+ sweet_gpu_param(uint32_t which, uint64_t *value)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_param(which, value);
++	}
+ 	if (!a630_dev.ready) {
+ 		return false;
+ 	}
+@@ -2810,6 +2841,9 @@ sweet_gpu_param(uint32_t which, uint64_t *value)
+ uint32_t
+ sweet_gpu_fence_last(void)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_fence_last();
++	}
+ 	return a630_dev.seqno;
+ }
+ 
+@@ -2826,12 +2860,18 @@ bool sweet_gpu_fence_done(uint32_t fence);
+ uint32_t
+ sweet_gpu_fence_snapshot(void)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_ready() ? sweet_a810_msm_fence_last() : 0;
++	}
+ 	return a630_dev.ready && cp_memory ? a630_dev.seqno : 0;
+ }
+ 
+ bool
+ sweet_gpu_fence_passed(uint32_t fence)
+ {
++	if (sweet_board_asteroids()) {
++		return !sweet_a810_msm_ready() || sweet_a810_msm_fence_done(fence);
++	}
+ 	if (fence == 0 || !a630_dev.ready || !cp_memory) {
+ 		return true;
+ 	}
+@@ -2841,6 +2881,9 @@ sweet_gpu_fence_passed(uint32_t fence)
+ bool
+ sweet_gpu_fence_done(uint32_t fence)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_fence_done(fence);
++	}
+ 	volatile uint32_t *word = (volatile uint32_t *)(cp_memory + SCRATCH_OFF + SCRATCH_FENCE);
+ 	uint32_t v = *word;
+ 
+@@ -2857,6 +2900,12 @@ sweet_gpu_fence_done(uint32_t fence)
+ void
+ sweet_gpu_debug(uint32_t *w)
+ {
++	if (sweet_board_asteroids()) {
++		bzero(w, DBG_N * sizeof(uint32_t));
++		w[0] = sweet_a810_msm_ready() ? 5u : 0u;
++		w[15] = sweet_a810_msm_fence_last();
++		return;
++	}
+ 	if (!cc || !gmu) {
+ 		bzero(w, DBG_N * sizeof(uint32_t));
+ 		return;
+@@ -2916,6 +2965,11 @@ sweet_gpu_debug(uint32_t *w)
+ void
+ sweet_gpu_report(const char *why)
+ {
++	if (sweet_board_asteroids()) {
++		printf("SWEET GPU: A810 %s: ready %d, last fence %u\n", why, sweet_a810_msm_ready(), sweet_a810_msm_fence_last());
++		sweet_log_sync();
++		return;
++	}
+ 	uint32_t w[DBG_N];
+ 
+ 	sweet_gpu_debug(w);
+@@ -2936,6 +2990,10 @@ sweet_gpu_report(const char *why)
+ void
+ sweet_gpu_mark_lost(void)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_mark_lost();
++		return;
++	}
+ 	if (!a630_dev.lost) {
+ 		a630_dev.hangs++;
+ 		sweet_gpu_report("GPU HANG (no completion)");
+@@ -2966,6 +3024,9 @@ ring_time(uint32_t seq, unsigned end)
+ uint32_t
+ sweet_gpu_submit(const uint64_t *ib_iova, const uint32_t *ib_dwords, unsigned count)
+ {
++	if (sweet_board_asteroids()) {
++		return sweet_a810_msm_submit(ib_iova, ib_dwords, count);
++	}
+ 	unsigned need = (a630_stamps ? 32 : 16) + 4 * count, room = 0;
+ 
+ 	if (!sweet_gpu_ready() || count == 0 || count > 128) {
+@@ -3331,12 +3392,20 @@ static LCK_MTX_DECLARE(a630_mtx, &a630_lck_grp);
+ void
+ sweet_gpu_lock(void)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_lock();
++		return;
++	}
+ 	lck_mtx_lock(&a630_mtx);
+ }
+ 
+ void
+ sweet_gpu_unlock(void)
+ {
++	if (sweet_board_asteroids()) {
++		sweet_a810_msm_unlock();
++		return;
++	}
+ 	lck_mtx_unlock(&a630_mtx);
+ }
+ 
+@@ -3462,6 +3531,9 @@ sweet_gpu_recover(const char *why)
+ uint32_t
+ sweet_gpu_epoch(void)
+ {
++	if (sweet_board_asteroids()) {
++		return 0;
++	}
+ 	return a630_recoveries;
+ }
+ 
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index c76d863..e21f4b5 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -66,6 +66,7 @@
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ /* sweet_ufs.c: write the console ring to the persistent log now (a stage may raise an SError) */
+ extern void sweet_log_sync(void);
++extern void SweetAdrenoPublish(void);     /* iokit/Kernel/arm/SweetAdreno.cpp */
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include "sweet_board.h"
+@@ -1494,6 +1495,23 @@ sweet_a810_fence_passed(uint32_t seqno)
+ 	return (int32_t)(a810_ring_observed(&a810_ring) - seqno) >= 0;
+ }
+ 
++/* The GMU always-on counter (19.2 MHz), msm's MSM_PARAM_TIMESTAMP (a6xx_gmu_get_timestamp reads the same pair). */
++bool
++sweet_a810_timestamp(uint64_t *value)
++{
++	uint32_t lo = 0, hi = 0, hi2 = 0;
++	if (!a810_ready || a810_read32(NULL, GPB_WIN_GMU, GPB_GMU_AO_COUNTER_H, &hi) ||
++	    a810_read32(NULL, GPB_WIN_GMU, GPB_GMU_AO_COUNTER_L, &lo) ||
++	    a810_read32(NULL, GPB_WIN_GMU, GPB_GMU_AO_COUNTER_H, &hi2)) {
++		return false;
++	}
++	if (hi2 != hi && a810_read32(NULL, GPB_WIN_GMU, GPB_GMU_AO_COUNTER_L, &lo)) {
++		return false;
++	}
++	*value = ((uint64_t)hi2 << 32) | lo;
++	return true;
++}
++
+ static int
+ a810_vm_errno(int st, int map)
+ {
+@@ -1614,6 +1632,9 @@ a810_thread(void *arg, wait_result_t wr)
+ 		ok = a810_stage16();
+ 	}
+ 	A810_LOG("SWEET A810: done (mode %u, %s)\n", mode, ok ? "every stage passed" : "stopped at a gate");
++	if (ok && mode >= 16 && sweet_a810_ready()) {
++		SweetAdrenoPublish();   /* the msm user client (iokit/Kernel/arm/SweetAdreno.cpp) on the A810 (sweet_a810_msm.c) */
++	}
+ 	thread_terminate(current_thread());
+ }
+ 
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index 8960071..9df123e 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -1,7 +1,7 @@
+ /* SPDX-License-Identifier: MIT */
+ /*
+  * Nothing Phone (3a) "asteroids": the Adreno 810 kernel interface left behind by sweeta810=16 (sweet_a810.c), for the
+- * next integration step (an IOKit/IOGPU front end). Nothing calls it yet.
++ * msm user client (sweet_a810_msm.c behind iokit/Kernel/arm/SweetAdreno.cpp).
+  *
+  * Every call refuses (false / nonzero) unless stages 1-16 all passed in this boot. The GPU context is the one stage 12
+  * built: bank 0, ASID 2, a 2 GiB lower (TTBR0) GPU address space with 4 KiB pages, Normal non-cacheable (the CPU must
+@@ -43,4 +43,22 @@ bool sweet_a810_fence_passed(uint32_t seqno);
+  * pages alive until the unmap returned and every submission that used them passed its fence. */
+ int sweet_a810_vm_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot);
+ int sweet_a810_vm_unmap(uint64_t iova, uint64_t bytes);
++/* The GMU always-on counter (19.2 MHz); false when the GPU is not up. */
++bool sweet_a810_timestamp(uint64_t *value);
++
++/* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
++bool sweet_a810_msm_ready(void);
++void sweet_a810_msm_lock(void);
++void sweet_a810_msm_unlock(void);
++bool sweet_a810_msm_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken);
++bool sweet_a810_msm_iova_reserve(uint64_t iova, uint64_t size);
++void sweet_a810_msm_iova_free(uint64_t iova, uint64_t size);
++bool sweet_a810_msm_vm_map(uint64_t iova, uint64_t pa, bool readonly);
++void sweet_a810_msm_vm_flush(void);
++void sweet_a810_msm_vm_unmap(uint64_t iova, uint64_t size);
++uint32_t sweet_a810_msm_submit(const uint64_t *ib_iova, const uint32_t *ib_dwords, unsigned count);
++bool sweet_a810_msm_fence_done(uint32_t fence);
++uint32_t sweet_a810_msm_fence_last(void);
++void sweet_a810_msm_mark_lost(void);
++bool sweet_a810_msm_param(uint32_t which, uint64_t *value);
+ #endif
+diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
+new file mode 100644
+index 0000000..546a635
+--- /dev/null
++++ b/bsd/dev/sweet_a810_msm.c
+@@ -0,0 +1,373 @@
++/*
++ * Nothing Phone (3a) "asteroids": the Adreno 810 behind the msm user client (iokit/Kernel/arm/SweetAdreno.cpp).
++ *
++ * SweetAdreno.cpp calls the sweet_gpu_* functions of sweet_a630.c; on asteroids each of those forwards here
++ * (sweet_board_asteroids()), and this file answers them with the A810 that sweeta810=16 brought up (sweet_a810_api.h).
++ * Differences from the A630 backend that the user client does not see:
++ *   - GPU addresses are [SWEET_A810_VA_START, SWEET_A810_VA_END), first-fit like the A630's list.
++ *   - Page maps are collected into physically contiguous runs and entered at vm_flush (each sweet_a810_vm_map is one
++ *     TLB invalidate). A bitmap of mapped pages lets a map over a page that is still mapped replace it (the A630's
++ *     page-table write did) and lets an unmap skip pages that were never mapped.
++ *   - A submission of several IBs is one sweet_a810_submit_ib per IB; the fence is the last one's.
++ *   - No SMMU fault check and no recovery yet: a submission that does not come back marks the GPU lost.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/locks.h>
++#include <kern/kalloc.h>
++#include "sweet_board.h"
++#include "sweet_a810_api.h"
++
++extern void sweet_log_sync(void);               /* sweet_ufs.c */
++
++/* the client-visible facts of sweet_a810_board.h (GPB_A810_CHIP_ID, GPB_A810_GMEM_BYTES, GPB_UBWC_HBB, GPB_UBWC_SWIZZLE);
++ * that header defines functions and tables for sweet_a810.c and is not included twice */
++#define AM_CHIP_ID      0x44010000u
++#define AM_GMEM_BYTES   0x90000u
++#define AM_UBWC_HBB     15u
++#define AM_UBWC_SWIZZLE 2u
++#define AM_PAGE         0x1000ull
++#define AM_GUARD        AM_PAGE                 /* one unmapped page after each allocation, as the A630's GVM_GUARD */
++#define AM_MAXFREE      512
++#define AM_PAGES        ((SWEET_A810_VA_END - SWEET_A810_VA_START) / AM_PAGE)
++
++static struct {
++	uint64_t start, size;
++} am_free[AM_MAXFREE];
++static unsigned am_nfree;
++static bool am_inited, am_lost;
++static uint8_t *am_mapped;                      /* one bit per page of the window */
++static uint32_t am_last;                        /* the newest fence handed out */
++static uint32_t am_maps, am_submits;
++/* the run being collected: iova..iova+bytes -> pa..pa+bytes, one prot */
++static uint64_t am_run_iova, am_run_pa, am_run_bytes;
++static unsigned am_run_prot;
++
++static LCK_GRP_DECLARE(am_lck_grp, "sweeta810msm");
++static LCK_MTX_DECLARE(am_mtx, &am_lck_grp);
++
++static bool
++am_bit(uint64_t iova)
++{
++	uint64_t n = (iova - SWEET_A810_VA_START) / AM_PAGE;
++	return (am_mapped[n / 8] >> (n % 8)) & 1;
++}
++
++static void
++am_set(uint64_t iova, bool on)
++{
++	uint64_t n = (iova - SWEET_A810_VA_START) / AM_PAGE;
++	if (on) {
++		am_mapped[n / 8] |= (uint8_t)(1u << (n % 8));
++	} else {
++		am_mapped[n / 8] &= (uint8_t)~(1u << (n % 8));
++	}
++}
++
++static bool
++am_init(void)
++{
++	if (am_inited) {
++		return am_mapped != NULL;
++	}
++	am_inited = true;
++	am_mapped = kalloc_data(AM_PAGES / 8, Z_WAITOK | Z_ZERO);
++	if (am_mapped == NULL) {
++		return false;
++	}
++	am_free[0].start = SWEET_A810_VA_START;
++	am_free[0].size = SWEET_A810_VA_END - SWEET_A810_VA_START;
++	am_nfree = 1;
++	printf("SWEET GPU: A810 msm backend: GPU addresses %#llx-%#llx\n", SWEET_A810_VA_START, SWEET_A810_VA_END);
++	return true;
++}
++
++bool
++sweet_a810_msm_ready(void)
++{
++	return sweet_a810_ready() && !am_lost && am_init();
++}
++
++void
++sweet_a810_msm_lock(void)
++{
++	lck_mtx_lock(&am_mtx);
++}
++
++void
++sweet_a810_msm_unlock(void)
++{
++	lck_mtx_unlock(&am_mtx);
++}
++
++/* ---- GPU addresses: the A630's first-fit list over the A810 window ---- */
++bool
++sweet_a810_msm_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
++{
++	uint64_t need = size + AM_GUARD;
++
++	if (!sweet_a810_msm_ready() || size == 0 || (size & (AM_PAGE - 1))) {
++		return false;
++	}
++	for (unsigned i = 0; i < am_nfree; i++) {
++		if (am_free[i].size >= need) {
++			*iova = am_free[i].start;
++			*taken = need;
++			am_free[i].start += need;
++			am_free[i].size -= need;
++			if (am_free[i].size == 0) {
++				memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
++				am_nfree--;
++			}
++			return true;
++		}
++	}
++	return false;
++}
++
++bool
++sweet_a810_msm_iova_reserve(uint64_t iova, uint64_t size)
++{
++	if (!sweet_a810_msm_ready() || size == 0 || ((size | iova) & (AM_PAGE - 1)) || iova < SWEET_A810_VA_START ||
++	    iova + size > SWEET_A810_VA_END) {
++		return false;
++	}
++	for (unsigned i = 0; i < am_nfree; i++) {
++		uint64_t s = am_free[i].start, e = s + am_free[i].size;
++		if (iova < s || iova + size > e) {
++			continue;
++		}
++		if (iova == s && iova + size == e) {
++			memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
++			am_nfree--;
++		} else if (iova == s) {
++			am_free[i].start += size;
++			am_free[i].size -= size;
++		} else if (iova + size == e) {
++			am_free[i].size -= size;
++		} else {
++			if (am_nfree == AM_MAXFREE) {
++				return false;
++			}
++			memmove(&am_free[i + 1], &am_free[i], (am_nfree - i) * sizeof(am_free[0]));
++			am_nfree++;
++			am_free[i].size = iova - s;
++			am_free[i + 1].start = iova + size;
++			am_free[i + 1].size = e - (iova + size);
++		}
++		return true;
++	}
++	return false;
++}
++
++void
++sweet_a810_msm_iova_free(uint64_t iova, uint64_t size)
++{
++	unsigned i = 0;
++
++	if (!am_inited || am_mapped == NULL) {
++		return;
++	}
++	while (i < am_nfree && am_free[i].start < iova) {
++		i++;
++	}
++	if (i > 0 && am_free[i - 1].start + am_free[i - 1].size == iova) {
++		am_free[i - 1].size += size;
++		if (i < am_nfree && am_free[i - 1].start + am_free[i - 1].size == am_free[i].start) {
++			am_free[i - 1].size += am_free[i].size;
++			memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
++			am_nfree--;
++		}
++		return;
++	}
++	if (i < am_nfree && iova + size == am_free[i].start) {
++		am_free[i].start = iova;
++		am_free[i].size += size;
++		return;
++	}
++	if (am_nfree == AM_MAXFREE) {
++		printf("SWEET GPU: A810 iova free list full; %#llx+%#llx lost\n", iova, size);
++		return;
++	}
++	memmove(&am_free[i + 1], &am_free[i], (am_nfree - i) * sizeof(am_free[0]));
++	am_nfree++;
++	am_free[i].start = iova;
++	am_free[i].size = size;
++}
++
++/* ---- the GPU page table ---- */
++
++/* Unmaps the pages of [iova, iova+size) that are mapped, one call per mapped run. */
++static void
++am_unmap_range(uint64_t iova, uint64_t size)
++{
++	uint64_t end = iova + size, run = 0, run_start = 0;
++
++	for (uint64_t va = iova; va <= end; va += AM_PAGE) {
++		bool m = va < end && am_bit(va);
++		if (m) {
++			if (!run) {
++				run_start = va;
++			}
++			run += AM_PAGE;
++			am_set(va, false);
++			continue;
++		}
++		if (run) {
++			int err = sweet_a810_vm_unmap(run_start, run);
++			if (err) {
++				printf("SWEET GPU: A810 unmap %#llx+%#llx: %d\n", run_start, run, err);
++			}
++			run = 0;
++		}
++	}
++}
++
++static bool
++am_run_flush(void)
++{
++	if (!am_run_bytes) {
++		return true;
++	}
++	am_unmap_range(am_run_iova, am_run_bytes);      /* a page still mapped is replaced, as the A630's PTE write did */
++	int err = sweet_a810_vm_map(am_run_iova, am_run_pa, am_run_bytes, am_run_prot);
++	if (!err) {
++		for (uint64_t d = 0; d < am_run_bytes; d += AM_PAGE) {
++			am_set(am_run_iova + d, true);
++		}
++		am_maps++;
++	} else {
++		printf("SWEET GPU: A810 map %#llx -> %#llx +%#llx prot %u: %d\n", am_run_iova, am_run_pa, am_run_bytes,
++		    am_run_prot, err);
++	}
++	am_run_bytes = 0;
++	return err == 0;
++}
++
++/* One 4 KiB page; entered with its run at the next sweet_gpu_vm_flush (or when the run breaks). */
++bool
++sweet_a810_msm_vm_map(uint64_t iova, uint64_t pa, bool readonly)
++{
++	unsigned prot = SWEET_A810_PROT_READ | (readonly ? 0u : SWEET_A810_PROT_WRITE) | SWEET_A810_PROT_EXEC;
++
++	if (!sweet_a810_msm_ready() || ((iova | pa) & (AM_PAGE - 1)) || iova < SWEET_A810_VA_START ||
++	    iova >= SWEET_A810_VA_END) {
++		return false;
++	}
++	if (am_run_bytes && iova == am_run_iova + am_run_bytes && pa == am_run_pa + am_run_bytes && prot == am_run_prot) {
++		am_run_bytes += AM_PAGE;
++		return true;
++	}
++	if (!am_run_flush()) {
++		return false;
++	}
++	am_run_iova = iova;
++	am_run_pa = pa;
++	am_run_bytes = AM_PAGE;
++	am_run_prot = prot;
++	return true;
++}
++
++void
++sweet_a810_msm_vm_flush(void)
++{
++	(void)am_run_flush();
++}
++
++void
++sweet_a810_msm_vm_unmap(uint64_t iova, uint64_t size)
++{
++	if (!am_inited || am_mapped == NULL || iova < SWEET_A810_VA_START || iova + size > SWEET_A810_VA_END) {
++		return;
++	}
++	(void)am_run_flush();
++	am_unmap_range(iova, size);
++}
++
++/* ---- submissions and fences ---- */
++uint32_t
++sweet_a810_msm_submit(const uint64_t *ib_iova, const uint32_t *ib_dwords, unsigned count)
++{
++	uint32_t seq = 0;
++
++	if (!sweet_a810_msm_ready() || count == 0 || count > 128) {
++		return 0;
++	}
++	(void)am_run_flush();
++	for (unsigned i = 0; i < count; i++) {
++		int err = ENOSPC;
++		/* a full ring: wait for the CP for up to 2 s, as the A630's submit does */
++		for (unsigned tries = 0; tries < 2000 && err == ENOSPC; tries++) {
++			err = sweet_a810_submit_ib(ib_iova[i], ib_dwords[i], &seq);
++			if (err == ENOSPC) {
++				delay(1000);
++			}
++		}
++		if (err) {
++			printf("SWEET GPU: A810 submit IB %u/%u %#llx %u dwords: %d\n", i, count, ib_iova[i], ib_dwords[i], err);
++			if (err != EINVAL) {
++				am_lost = true;
++			}
++			return 0;
++		}
++	}
++	am_last = seq;
++	if (++am_submits == 1 || (am_submits & 1023) == 0) {
++		printf("SWEET GPU: A810 %u submissions, fence %u, %u maps\n", am_submits, seq, am_maps);
++	}
++	return seq;
++}
++
++bool
++sweet_a810_msm_fence_done(uint32_t fence)
++{
++	return fence == 0 || sweet_a810_fence_passed(fence);
++}
++
++uint32_t
++sweet_a810_msm_fence_last(void)
++{
++	return am_last;
++}
++
++void
++sweet_a810_msm_mark_lost(void)
++{
++	if (!am_lost) {
++		am_lost = true;
++		printf("SWEET GPU: A810 LOST: fence %u did not come back (no recovery yet)\n", am_last);
++		sweet_log_sync();
++	}
++}
++
++/* msm MSM_PARAM_* (the numbers are sweet_a630.c's switch): the A810's facts from sweet_a810_board.h. */
++bool
++sweet_a810_msm_param(uint32_t which, uint64_t *value)
++{
++	if (!sweet_a810_msm_ready()) {
++		return false;
++	}
++	switch (which) {
++	case 1:  *value = 0; return true;                               /* GPU_ID: 0 on a7xx/a8xx, Mesa uses CHIP_ID */
++	case 2:  *value = AM_GMEM_BYTES; return true;             /* GMEM_SIZE 576 KiB */
++	case 3:  *value = AM_CHIP_ID; return true;                /* CHIP_ID */
++	case 4:  *value = 763000000ull; return true;                    /* MAX_FREQ: the level stage 11 voted */
++	case 5:  return sweet_a810_timestamp(value);                    /* TIMESTAMP */
++	case 6:  *value = 0x100000; return true;                        /* GMEM_BASE */
++	case 7:  *value = 1; return true;                               /* PRIORITIES */
++	case 8:  *value = 0; return true;                               /* PP_PGTABLE */
++	case 9:  *value = am_lost ? 1 : 0; return true;                 /* FAULTS */
++	case 10: *value = 0; return true;                               /* SUSPENDS */
++	case 14: *value = SWEET_A810_VA_START; return true;             /* VA_START */
++	case 15: *value = SWEET_A810_VA_END - SWEET_A810_VA_START; return true;     /* VA_SIZE */
++	case 16: *value = AM_UBWC_HBB; return true;                    /* HIGHEST_BANK_BIT */
++	case 18: *value = AM_UBWC_SWIZZLE; return true;                /* UBWC_SWIZZLE */
++	case 19: *value = 0; return true;                               /* MACROTILE_MODE */
++	default: return false;
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 2fc64a8..6d4b1fd 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -209,7 +209,9 @@ SweetAdrenoPublish(void)
+ 		svc->setName(SWEET_GPU_SERVICE_NAME);
+ 		svc->setProperty(kIOUserClientClassKey, agx ? "AGXDeviceUserClient" : "SweetAdrenoUserClient");
+ 		svc->setProperty("SweetGPUABIVersion", (uint64_t)SWEET_GPU_ABI_VERSION, 32);
+-		svc->setProperty("SweetGPUChipID", (uint64_t)0x06030001, 32);
++		uint64_t chip = 0x06030001;     /* the A630; sweet_gpu_param answers 0x44010000 for the asteroids A810 */
++		(void)sweet_gpu_param(3, &chip);
++		svc->setProperty("SweetGPUChipID", chip, 32);
+ 		svc->setProperty("SweetGPUABIMinor", (uint64_t)2, 32);
+ 		IOService *platform = IOService::getPlatform();
+ 		if (platform != NULL && svc->attach(platform)) {
+@@ -1317,8 +1319,8 @@ SweetAdrenoUserClient::externalMethod(uint32_t selector, IOExternalMethodArgumen
+ 		sweet_gpu_lock();
+ 		r.info.abi_version = SWEET_GPU_ABI_VERSION;
+ 		r.info.flags = (sweet_gpu_ready() ? 1u : 2u) | (gSboAlias ? SWEET_GPU_INFO_CAP_SBO_ALIAS : 0u);
+-		r.info.gpu_id = 630;
+-		r.info.chip_id = 0x06030001;
++		r.info.gpu_id = sweet_gpu_param(SWEET_MSM_PARAM_CHIP_ID, &v) && v != 0x06030001 ? 0 : 630;
++		r.info.chip_id = sweet_gpu_param(SWEET_MSM_PARAM_CHIP_ID, &v) ? (uint32_t)v : 0x06030001;
+ 		r.info.va_start = sweet_gpu_param(SWEET_MSM_PARAM_VA_START, &v) ? v : 0;
+ 		r.info.va_size = sweet_gpu_param(SWEET_MSM_PARAM_VA_SIZE, &v) ? v : 0;
+ 		r.info.last_fence = sweet_gpu_ready() ? sweet_gpu_fence_last() : 0;

@@ -69,6 +69,9 @@
     64 MiB), SQE from ADT, gpb_hw_init, CP start (RB_CNTL 0x20c, ME_INIT, CP_MEM_WRITE), zap via SCM PAS 13 into
     0x9ea9a000 from ADT zap-mbn + CP_SET_SECURE_MODE 0, first IB, then a 160-row bar drawn by the GPU at row 160.
     sweet_a810_api.h (ready / submit_ib / fence_passed / vm_map) for the user-client step. sweeta810=1..16.
+  * CI run 40539792317 (f51bfc9) FAILED to compile: sweet_reboot.c printf strings held literal newlines, sweet_rtc_asteroids.c
+    included libkern/version.h (const char version[] vs sys/systm.h char version[]), sweet_a810.c used pmap_find_phys
+    undeclared in bsd/. Fixed in 1f88369 (local extern like sweet_dma; include dropped) -> CI run 40570306243.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

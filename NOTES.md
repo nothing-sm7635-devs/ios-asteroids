@@ -14,7 +14,14 @@
   27, fb, ECID 'ASTR'+1; UFS 0x1d84000 as sweet). `asteroids/build-boot.sh KERNEL NAME`: ADT (n104ap, 414x896 @2x)
   + mkpayload v1 + the ios-sweet asteroids shim (`fastboot boot`; nothing flashed to boot), Poco F1 hardware
   boot-args removed. Facts and history of the phone: ios-sweet `asteroids/NOTES.md`.
-* Next: CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
+* **2026-10-27 ~18:45: iOS 26 APPLE LOGO on asteroids (user).** CI run 40505443753 (nothing-sm7635-devs/ios-asteroids,
+  branch asteroids-ios26, push of 1c1d208): success, kernel xnu-12377.121.6 with 2000. Root
+  `research/ios26/ios26-root-full.simg` (iOS 26.6.2 23G90 iPhone12,1, Linux `sudo -E env PATH=$PATH renegade root`,
+  berga-tools-v3) flashed to userdata by the user; boot image `asteroids/out/ios26-ast1-boot.img`
+  (`asteroids/build-boot.sh research/ios26/kernel-ast/kernel.development.sweet ios26-ast1`). No USB on asteroids
+  (sweet_usb is off): no SSH/log over USB; the persistent log is the last 4 MiB of userdata. Userdata holds iOS
+  again: never let the phone boot Android.
+* (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);
   `renegade fetch` + `sudo -E renegade root` (ios26); flash the root to userdata (user's OK); boot.
 
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<

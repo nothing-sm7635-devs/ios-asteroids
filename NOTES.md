@@ -95,6 +95,16 @@
     0xabfe00000": rootstockos's pool is on a 12 GB phone (RAM to 0xaffffefff); this phone has 8 GB, recovery
     /proc/iomem System RAM 0x8bf800000-0x9ffffefff, no static reserved-memory above 4 GiB. 2007: GPU pool at
     0x9F4000000, 128 MiB (the top of the bank XNU's ADT window 0x8c0000000+0x134000000 leaves free).
+  * ast5 (sweetpanel=2): Settings opens now, the clock is right after a restart (user), "laggy as heck". Swiping to
+    recents -> the same backboardd push_surface assertion x3 (log logs/ast5-recents; the '&BGA' surface IS now created
+    as BGRA, so the format was not the cause: any offscreen render target backboardd pushes asserts). ast5-p1 (same
+    kernel, sweetpanel=1, no backlight service): recents and Settings work (user). So the assertion follows the
+    backlight service (CoreBrightness/libEDR active) -> images use sweetpanel=1 until that is understood.
+  * HackiOS survey (origin/main, 632 commits): our panel copy and touch threads are kernel_task threads, which
+    sweet_amp_wanted_map sends to the A520s capped at 50% (sweetcpufreq_little_max). Test image ios26-ast5-fast:
+    sweetpanel=1 sweetamp=0 sweetcpufreq_little_max=100 sweetfb_vsync=1. Candidates: multi-thread presentScaled,
+    surface buffer reuse, MC0/SH0 bandwidth vote, 1 ms touch poll while touched, w30r/l10r/w30R/b3a8 -> BGRA,
+    snapshot JPEG instead of ASTC, SpringBoard BKNoWatchdogs/FBLaunchWatchdogScale, BSUIVibrancyEffectViewDisabled.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

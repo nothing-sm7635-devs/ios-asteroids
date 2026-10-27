@@ -3446,10 +3446,10 @@ index 3556c84..1b901bd 100644
  	if (mode <= 0) {
  		printf("SWEET PANEL: off (sweetpanel=0)\n");
 diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
-index 50daaba..ae879f9 100644
+index 50daaba..aeb83e3 100644
 --- a/bsd/dev/sweet_reboot.c
 +++ b/bsd/dev/sweet_reboot.c
-@@ -196,6 +196,164 @@ sr_pon_set_reason(unsigned magic)
+@@ -196,6 +196,154 @@ sr_pon_set_reason(unsigned magic)
  	printf("SWEET REBOOT: PON_SOFT_RB_SPARE 0x88f 0x%02x -> 0x%02x (read back 0x%02x)\n", old, upd, back);
  }
  
@@ -3529,8 +3529,7 @@ index 50daaba..ae879f9 100644
 +	ver = core[0];
 +	count = core[1] & 0x7ffu;
 +	if (ver < 0x70000000u || ver >= 0x80000000u || count > 0x380u) {
-+		printf("SWEET REBOOT: asteroids: arbiter version %#x / %u APIDs not v7: no reboot to fastboot
-+", ver, count);
++		printf("SWEET REBOOT: asteroids: arbiter version %#x / %u APIDs not v7: no reboot to fastboot\n", ver, count);
 +		return;
 +	}
 +	for (uint32_t n = 0; n < count; n++) {
@@ -3539,27 +3538,23 @@ index 50daaba..ae879f9 100644
 +			continue;
 +		}
 +		owner = cnfg[(4u * n) / 4] & 7u;
-+		printf("SWEET REBOOT: asteroids: PPID 0x071 (SDAM 0x7100) APID %u, written by EE %u
-+", n, owner);
++		printf("SWEET REBOOT: asteroids: PPID 0x071 (SDAM 0x7100) APID %u, written by EE %u\n", n, owner);
 +		if (owner == 0 && sa_apid < 0) {
 +			sa_apid = (int)n;
 +		}
 +	}
 +	if (sa_apid < 0 || (uint32_t)sa_apid * 0x20u + 0x20u > 0x8000u) {
-+		printf("SWEET REBOOT: asteroids: no EE 0 channel for the reboot reason: restart stops instead of resetting
-+");
++		printf("SWEET REBOOT: asteroids: no EE 0 channel for the reboot reason: restart stops instead of resetting\n");
 +		return;
 +	}
 +	sa_obs = sa_map(SA_OBS_PA + 0x20u * (uint32_t)sa_apid);
 +	sa_chnl = sa_map(SA_CHNLS_PA + 0x1000u * (uint32_t)sa_apid);
 +	if (sa_obs == NULL || sa_chnl == NULL || !sa_read(&reason)) {
-+		printf("SWEET REBOOT: asteroids: reason register not readable: restart stops instead of resetting
-+");
++		printf("SWEET REBOOT: asteroids: reason register not readable: restart stops instead of resetting\n");
 +		return;
 +	}
 +	sa_ready = true;
-+	printf("SWEET REBOOT: asteroids: 0x7148 = 0x%02x (reason %u); restart and power off go to fastboot
-+",
++	printf("SWEET REBOOT: asteroids: 0x7148 = 0x%02x (reason %u); restart and power off go to fastboot\n",
 +	    reason, reason >> 1);
 +}
 +
@@ -3571,8 +3566,7 @@ index 50daaba..ae879f9 100644
 +	uint32_t st;
 +
 +	if (!sa_ready || !sa_read(&old)) {
-+		printf("SWEET REBOOT: asteroids: reason register not ready, no reset
-+");
++		printf("SWEET REBOOT: asteroids: reason register not ready, no reset\n");
 +		return;
 +	}
 +	upd = (uint8_t)((old & 0x01u) | (SA_REASON_BOOTLOADER << 1));
@@ -3582,23 +3576,19 @@ index 50daaba..ae879f9 100644
 +		sa_chnl[0x00 / 4] = (0u << 27) | (SA_REASON_REG << 4);       /* EXT_WRITEL, one byte */
 +		__asm__ volatile ("dsb sy" ::: "memory");
 +		if (!sa_wait(sa_chnl, &st)) {
-+			printf("SWEET REBOOT: asteroids: reason write 0x%02x -> 0x%02x failed (status %#x), no reset
-+", old, upd, st);
++			printf("SWEET REBOOT: asteroids: reason write 0x%02x -> 0x%02x failed (status %#x), no reset\n", old, upd, st);
 +			return;
 +		}
 +	}
 +	if (!sa_read(&back) || (back >> 1) != SA_REASON_BOOTLOADER) {
-+		printf("SWEET REBOOT: asteroids: reason reads back 0x%02x, not bootloader, no reset
-+", back);
++		printf("SWEET REBOOT: asteroids: reason reads back 0x%02x, not bootloader, no reset\n", back);
 +		return;
 +	}
-+	printf("SWEET REBOOT: asteroids: 0x7148 0x%02x -> 0x%02x (bootloader), PSCI SYSTEM_RESET
-+", old, back);
++	printf("SWEET REBOOT: asteroids: 0x7148 0x%02x -> 0x%02x (bootloader), PSCI SYSTEM_RESET\n", old, back);
 +	delay(100 * 1000);
 +	sr_psci_system_reset();
 +	delay(2000 * 1000);
-+	printf("SWEET REBOOT: asteroids: PSCI SYSTEM_RESET returned
-+");
++	printf("SWEET REBOOT: asteroids: PSCI SYSTEM_RESET returned\n");
 +}
 +
 +/* SweetPlatformExpert: power off on asteroids also goes to fastboot (a later power-on would boot Android). */
@@ -3614,7 +3604,7 @@ index 50daaba..ae879f9 100644
  /* Called by SweetPlatformExpert::haltRestart for panic notifications. */
  void
  sweet_reboot_note_panic(void)
-@@ -227,8 +385,10 @@ sweet_reboot_restart(int panic_restart)
+@@ -227,8 +375,10 @@ sweet_reboot_restart(int panic_restart)
  	 * Panics keep their own screen.
  	 */
  	if (sweet_board_asteroids() && !panic_restart && !sr_in_panic) {
@@ -3629,10 +3619,10 @@ index 50daaba..ae879f9 100644
  		return -1;
 diff --git a/bsd/dev/sweet_rtc_asteroids.c b/bsd/dev/sweet_rtc_asteroids.c
 new file mode 100644
-index 0000000..080c8cd
+index 0000000..08626aa
 --- /dev/null
 +++ b/bsd/dev/sweet_rtc_asteroids.c
-@@ -0,0 +1,502 @@
+@@ -0,0 +1,501 @@
 +/*
 + * Nothing Phone (3a) (asteroids) wall clock, the counterpart of the Poco F1's (sweet_spmi.c, patch 0245).
 + *
@@ -3666,7 +3656,6 @@ index 0000000..080c8cd
 +#include <kern/clock.h>
 +#include <kern/locks.h>
 +#include <kern/thread_call.h>
-+#include <libkern/version.h>
 +#include <machine/machine_routines.h>
 +#include <pexpert/pexpert.h>
 +#include "sweet_board.h"

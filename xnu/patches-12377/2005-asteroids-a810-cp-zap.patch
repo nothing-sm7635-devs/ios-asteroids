@@ -11,7 +11,7 @@ index 669fc49..b1058ea 100644
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_reboot.c			standard
 diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
-index ed65464..33e5407 100644
+index ed65464..014ce93 100644
 --- a/bsd/dev/sweet_a810.c
 +++ b/bsd/dev/sweet_a810.c
 @@ -1,9 +1,10 @@
@@ -28,7 +28,7 @@ index ed65464..33e5407 100644
   *   sweeta810level=L   the GPU level stage 11 votes (default 6: 763 MHz on the 3a's bin; clamped to the table)
   *   sweeta810fwpin=0   stage 9: accept a gen80300_gmu.bin other than the pinned one (default 1: SHA-256, size and the
   *                      15 block records must match this phone's own file); the block structure is checked either way
-@@ -21,28 +22,46 @@
+@@ -21,28 +22,48 @@
   *   9  8, and the GMU firmware (ADT /sweet-gpu "gmu-firmware") loaded, CM3 released, HFI ready awaited
   *  10  9 as the whole cold start: the HFI startup messages (GPU_PERF table, bandwidth table, core start, start)
   *  11  10, and GX on: HFI GX_BW_PERF_VOTE at sweeta810level, OOB GPU_SET, then RBBM_STATUS and friends
@@ -75,10 +75,12 @@ index ed65464..33e5407 100644
 +#include <vm/pmap.h>
 +#include <vm/vm_kern.h>
 +#include <vm/vm_kern_xnu.h>
++
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
  #include <pexpert/pexpert.h>
  #include <pexpert/device_tree.h>
  #include "sweet_board.h"
-@@ -50,6 +69,8 @@
+@@ -50,6 +71,8 @@
  #include "sweet_a810_smmu.h"
  #include "sweet_a810_hfi.h"
  #include "sweet_a810_gmu.h"
@@ -87,7 +89,7 @@ index ed65464..33e5407 100644
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
-@@ -58,7 +79,7 @@ extern kern_return_t thread_terminate(thread_t);
+@@ -58,7 +81,7 @@ extern kern_return_t thread_terminate(thread_t);
  void sweet_a810_probe(void);
  
  #define A810_START_DELAY_S      10u
@@ -96,7 +98,7 @@ index ed65464..33e5407 100644
  #define A810_FW_MAX             0x100000u
  
  static unsigned a810_mode;
-@@ -233,6 +254,7 @@ a810_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
+@@ -233,6 +256,7 @@ a810_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
  
  /* ---- Stage 5: the GMU's SMMU context (GpuPowerProbe.cpp gmuContext) ---- */
  static vm_offset_t a810_pool_va;        /* mode 4's write-combined map of the GMU pool; the context keeps using it */
@@ -104,7 +106,7 @@ index ed65464..33e5407 100644
  static int a810_ctx_ready;
  
  static void
-@@ -253,6 +275,7 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
+@@ -253,6 +277,7 @@ a810_stage5(const struct gpb_result *r, const struct gpb_pool_result *pool)
  	printf("SWEET A810: next: GMU SMMU context bank %u asid %u slot %u sid %u, mapping the SMMU %#llx + %#llx\n",
  	    GPB_GMU_BANK, GPB_GMU_ASID, GPB_GMU_SLOT, GPB_GMU_SID, GPB_SMMU_BASE, GPB_SMMU_WINDOW);
  	vm_offset_t smmu = ml_io_map(GPB_SMMU_BASE, GPB_SMMU_WINDOW);   /* lives for the boot: the bank points at the pool */
@@ -112,7 +114,7 @@ index ed65464..33e5407 100644
  	if (smmu == 0) {
  		a810_gate_failed(5, "SMMU map failed");
  		return 0;
-@@ -667,25 +690,28 @@ a810_stage9(void)
+@@ -667,25 +692,28 @@ a810_stage9(void)
  /* ---- Stage 11: GX on (gpuGx), through the cold start's MMIO adapter; no GPU-block writes ---- */
  static struct gpb_gx a810_gx;
  
@@ -146,7 +148,7 @@ index ed65464..33e5407 100644
  }
  static int
  a810_hfi_wait_once(void *cookie)
-@@ -731,6 +757,766 @@ a810_stage11(void)
+@@ -731,6 +759,766 @@ a810_stage11(void)
  	return 1;
  }
  
@@ -913,7 +915,7 @@ index ed65464..33e5407 100644
  static void
  a810_thread(void *arg, wait_result_t wr)
  {
-@@ -784,6 +1570,21 @@ a810_thread(void *arg, wait_result_t wr)
+@@ -784,6 +1572,21 @@ a810_thread(void *arg, wait_result_t wr)
  	if (ok && mode >= 11) {
  		ok = a810_stage11();
  	}

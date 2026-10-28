@@ -259,6 +259,18 @@
     layouts, partial windows across chunk boundaries, three-vector scatter, ASan/UBSan) passes; every file but the glue
     compiles under clang -Wall -Wextra -Wpedantic -Wstrict-prototypes -Werror. 2018's HFS compression refusal stays (iOS
     does not create new compressed files); 2019 reads the ones that exist.
+  * ast16 (kernel 16 = 338097f: 2018 + 2019; reflashed root; 2026-10-28): user: still no wallpaper, no control centre,
+    Safari crashes, Settings freezes, glitches. Logs logs/ast16(+var). What changed: LZFSE registered, NO decmpfs failure
+    any more; NO GPU allocation failure ("no run" never logged); 3 recoveries. Peak 339815 of 393216 GPU pages (1.3 GiB)
+    at 1024 submissions, 146036 later. Safari: an uncaught ObjC exception in Foundation (symbolicated with
+    tools/renegade/dsctools/crash.py, DSC_DIR=research/ios26/dsc extracted by `hfsx.py SIMG dsc`), text not captured.
+    Chlorophyll: 145 "texture refused: " with an EMPTY reason = IOSurface textures whose import and own-memory fallback
+    both failed (the fallback's reason went into why2, the log printed why: patch 0003 fixes the log); 216 "no-copy
+    texture refresh: 832 bytes per row for a region whose rows need 3312" (and 587 vs 2320): newTextureWithBytesNoCopy
+    textures 828 / 580 wide, 4 bytes a texel, whose buffer gives length/height ~ a quarter of a row (format and length
+    now logged, 0003); 6 IOSurfaces 1026x1026 refused by Turnip's import (VK_ERROR_INVALID_EXTERNAL_HANDLE), copied.
+    Next boot = diagnostics: root with Chlorophyll 0003, image ios26-ast16-scan (kernel 16, sweetscan=MobileSafari,
+    Preferences,backboardd,SpringBoard: the kernel's crash string scan for the exception text).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

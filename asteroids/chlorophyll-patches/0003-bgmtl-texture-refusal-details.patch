@@ -1,0 +1,32 @@
+--- a/src/bgmtl.m	2026-10-28 14:18:00.300984545 +0530
++++ b/src/bgmtl.m	2026-10-28 14:18:00.235851985 +0530
+@@ -2049,13 +2049,17 @@
+          /* Chlorophyll: CoreAnimation's backing stores of transparent layers are two-plane MTLPixelFormatRGB10A8_2P_XR10
+           * surfaces: XR10 RGB in plane 0, 8-bit alpha in plane 1. The texture gets its own BGRA8 memory (550's stand-in) and the
+           * surface is decoded into it when it changes. */
+-         char why2[256];
++         char why2[256] = { 0 };
+          _tex = chl_texture_create([device chl], &_desc, why2, sizeof(why2));
+          if (_tex) { _surfCopy = YES; _xr2p = YES; }
++         else snprintf(why, sizeof(why), "IOSurface %u (%ux%u fmt 550, two planes): own memory refused: %s", IOSurfaceGetID(sf),
++                       _desc.width, _desc.height, why2);
+       } else if (!_tex) {
+-         char why2[256];
++         char why2[256] = { 0 };
+          _tex = chl_texture_create([device chl], &_desc, why2, sizeof(why2));
+          if (_tex) _surfCopy = YES;
++         else snprintf(why, sizeof(why), "IOSurface %u (%ux%u fmt %lu): not imported, own memory refused: %s", IOSurfaceGetID(sf),
++                       _desc.width, _desc.height, (unsigned long)[d pixelFormat], why2);
+       }
+       if (bg_xr10log() && [d pixelFormat] == 550)
+          bg_xr10_note("xr10 wrap surface %u tex %p %ux%u planes %zu usage 0x%lx: %s", IOSurfaceGetID(sf), (void *)self, _desc.width,
+@@ -2231,7 +2235,8 @@
+    if (_ncBytes) {
+       const unsigned o[3] = { 0, 0, 0 }, sz[3] = { _desc.width, _desc.height, 1 };
+       if (chl_texture_replace(_tex, 0, 0, o, sz, _ncBytes, _ncLength / (_desc.height ? _desc.height : 1), 0, why, sizeof(why)) != 0)
+-         BG_LOG("no-copy texture refresh: %s\n", why);
++         BG_LOG("no-copy texture refresh: %s (%ux%u fmt %lu, %lu bytes, %u levels)\n", why, _desc.width, _desc.height,
++                (unsigned long)_desc.pixel_format, (unsigned long)_ncLength, _desc.mip_levels);
+    }
+    if (_linSrc && cb && __atomic_load_n(&_linPending, __ATOMIC_ACQUIRE) == 0 && _linSeq != cb->_seq) {
+       _linSeq = cb->_seq;

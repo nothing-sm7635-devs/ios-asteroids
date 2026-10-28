@@ -1,0 +1,50 @@
+diff --git a/iokit/IOKit/storage/IOStorageDeviceCharacteristics.h b/iokit/IOKit/storage/IOStorageDeviceCharacteristics.h
+index 43de57c..8804ab8 100644
+--- a/iokit/IOKit/storage/IOStorageDeviceCharacteristics.h
++++ b/iokit/IOKit/storage/IOStorageDeviceCharacteristics.h
+@@ -24,7 +24,20 @@
+ #ifndef _IOKIT_IO_STORAGE_DEVICE_CHARACTERISTICS_H_
+ #define _IOKIT_IO_STORAGE_DEVICE_CHARACTERISTICS_H_
+ 
++/* SWEET: the kernel build has no <TargetConditionals.h> (-nostdlibinc); IOStorageFamily is the macOS build of the
++ * family (the KDK 26.5 apfs kext's ABI, IOBlockStorageDevice.h's TARGET_OS_OSX methods included), so the macOS answers */
++#if __has_include(<TargetConditionals.h>)
+ #include <TargetConditionals.h>
++#endif
++#ifndef TARGET_OS_OSX
++#define TARGET_OS_OSX 1
++#endif
++#ifndef TARGET_OS_DRIVERKIT
++#define TARGET_OS_DRIVERKIT 0
++#endif
++#ifndef TARGET_OS_IPHONE
++#define TARGET_OS_IPHONE 0
++#endif
+ 
+ #if TARGET_OS_DRIVERKIT
+ #include <DriverKit/storage/IOStorageProtocolCharacteristics.h>
+diff --git a/iokit/IOKit/storage/IOStorageProtocolCharacteristics.h b/iokit/IOKit/storage/IOStorageProtocolCharacteristics.h
+index cb53429..5f2d2b0 100644
+--- a/iokit/IOKit/storage/IOStorageProtocolCharacteristics.h
++++ b/iokit/IOKit/storage/IOStorageProtocolCharacteristics.h
+@@ -24,7 +24,20 @@
+ #ifndef _IOKIT_IO_STORAGE_PROTOCOL_CHARACTERISTICS_H_
+ #define _IOKIT_IO_STORAGE_PROTOCOL_CHARACTERISTICS_H_
+ 
++/* SWEET: the kernel build has no <TargetConditionals.h> (-nostdlibinc); IOStorageFamily is the macOS build of the
++ * family (the KDK 26.5 apfs kext's ABI, IOBlockStorageDevice.h's TARGET_OS_OSX methods included), so the macOS answers */
++#if __has_include(<TargetConditionals.h>)
+ #include <TargetConditionals.h>
++#endif
++#ifndef TARGET_OS_OSX
++#define TARGET_OS_OSX 1
++#endif
++#ifndef TARGET_OS_DRIVERKIT
++#define TARGET_OS_DRIVERKIT 0
++#endif
++#ifndef TARGET_OS_IPHONE
++#define TARGET_OS_IPHONE 0
++#endif
+ 
+ #if TARGET_OS_DRIVERKIT
+ #include <DriverKit/storage/IOStorageControllerCharacteristics.h>

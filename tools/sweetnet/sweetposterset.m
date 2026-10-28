@@ -156,9 +156,14 @@ int main(int argc, char **argv) {
 			return 3;
 		}
 		BOOL cleanup = argc > 1 && !strcmp(argv[1], "--cleanup");
-		if (argc - cleanup != 3) { fprintf(stderr, "usage: sweetposterset [--cleanup] PROVIDER DESCRIPTOR_ID\n"); return 2; }
-		prov = [NSString stringWithUTF8String:argv[1 + cleanup]];
-		desc = [NSString stringWithUTF8String:argv[2 + cleanup]];
+		/* --if-none: select only when nothing is selected yet. Once PosterBoard's store works (iOS 26 on asteroids, kernel
+		 * 2021/2023) it selects the system's default poster itself, which renders right; forcing Mercury over it brought the
+		 * iOS 18-era poster back with Chlorophyll's wrong colours (ast18). */
+		BOOL ifnone = argc > 1 && !strcmp(argv[1], "--if-none");
+		int skip = (cleanup || ifnone) ? 1 : 0;
+		if (argc - skip != 3) { fprintf(stderr, "usage: sweetposterset [--cleanup|--if-none] PROVIDER DESCRIPTOR_ID\n"); return 2; }
+		prov = [NSString stringWithUTF8String:argv[1 + skip]];
+		desc = [NSString stringWithUTF8String:argv[2 + skip]];
 		dlopen("/System/Library/PrivateFrameworks/PosterBoardServices.framework/PosterBoardServices", RTLD_NOW);
 		svc = [[NSClassFromString(@"PRSService") alloc] init];
 		dispatch_semaphore_t s = dispatch_semaphore_create(0);
@@ -173,7 +178,8 @@ int main(int argc, char **argv) {
 		NSMutableArray *mine = [NSMutableArray array];
 		for (id c in all) if (matches(c)) [mine addObject:c];
 		printf("%lu configuration(s) for the lock role, %lu of %s/%s, selected %s (%s)\n", (unsigned long)all.count,
-		       (unsigned long)mine.count, argv[1 + cleanup], argv[2 + cleanup], D(selUUID).UTF8String, matches(sel) ? "match" : "other");
+		       (unsigned long)mine.count, argv[1 + skip], argv[2 + skip], D(selUUID).UTF8String, matches(sel) ? "match" : "other");
+		if (ifnone && sel) { printf("keeping the poster PosterBoard selected (%s)\n", D(selUUID).UTF8String); return 0; }
 
 		if (cleanup) {
 			id keep = nil;

@@ -1102,7 +1102,7 @@ poster() {
 	while [ $n -lt $tries ]; do
 		n=$((n+1))
 		echo "sweetposterset $prov $d try $n"
-		if /usr/local/bin/sweetposterset "$prov" "$d"; then
+		if /usr/local/bin/sweetposterset --if-none "$prov" "$d"; then      # PosterBoard's own selection wins (ast18)
 			/usr/local/bin/sweetposterset --cleanup "$prov" "$d"
 			echo "poster selected: $prov $d"
 			return 0

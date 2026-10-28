@@ -376,6 +376,12 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **Wallpaper colours (user, ast18): the iOS 26 default poster appeared first (PosterBoard's own choice, rendered right), then
+  the first-boot job replaced it with Mercury fluidity.two (iOS 18-era fallback), which Chlorophyll renders in wrong colours.**
+  Fix: `sweetposterset --if-none` (keeps whatever PosterBoard selected; sweetrun.sh poster() uses it), built on Linux with the
+  theos clang (plain arm64) + ios-ldid into research/sweetnet/ios18/sweetposterset (local builds win over the berga-tools
+  cache). Root rebuild picks it up. Mercury's colour bug in Chlorophyll stays open (lower priority now).
+
 * **ast18 boot 1 (kernel 18 = series ..2036, 22:40Z, logs/ast18 + ast18-var): WALLPAPER APPEARS (first time on iOS 26 here;
   Mercury fluidity.two selected, sweetposterset rc=0) but with wrong colours; icons still glitch; Control Center comes up as
   grey boxes; Safari aborts (4x); Settings freezes; recents work.** Found: (1) backboardd refused 83 textures "pixel format

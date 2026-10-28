@@ -208,6 +208,18 @@
     Kernel 2014: on the first timed-out wait, the BR/BV CP_IB1/2/3 BASE/REM/INIT (a6xx.xml A8XX-: 0x900-0x90b through
     CP_APERTURE_CNTL_HOST) and the dwords of each IB found in this client's kva BOs ("SWEET HANG ..." lines), to decode the
     hanging draw offline with Mesa's cffdec.
+  * Snapintosh (github.com/Acelogic/Snapintosh, MIT; macOS 27 on a Snapdragon X2 laptop: an EL2 monitor under the STOCK
+    kernelcache, emulating SPTM/TXM, AIC, ANS2, DART, 16K->4K shadow tables; AuxKC kexts AdrenoX2/AdrenoDisplay; Metal plug-in
+    + air2ir3). Not reproducible here: Gunyah owns EL2 on the phone. Its A8XX GPU code (compat/adreno-ib.c, the monitor
+    mediates the ring) was compared with ours. Taken, kernel 2015: (1) RB_GC_GMEM_PROTECT (BR, 0x00900000) and
+    SECVID_TRUST_CNTL 0 written AFTER CP_SET_SECURE_MODE 0 (our hw_init wrote the GMEM protect while still secure, where it
+    does not hold; theirs replays it after the exit: a GMEM-mode hang suspect, see ast8-60); (2) hang recovery, their
+    a8xx soft reset on our stages: SQE halt, RBBM_GBIF_HALT + GBIF_HALT 1/2 with acks, SMMU fault clear, RBBM_SW_RESET_CMD
+    (0x073) pulse >= 100 us, ring wiped, stage 13 hw_init replay (LLCC SCACHE_CNTL0/1 kept), SQE base + ring re-attach +
+    CP_ME_INIT, secure exit + the regs above, CCU/cache invalidate, RBBM_INT clear; old fences then read as passed, epoch =
+    recovery count, WAIT_FENCE succeeds for a voided fence (Turnip makes an error a lost device). At most 8 a boot; a failed
+    recovery marks the GPU lost as before. Their hw_init values are for the X2's A8XX variant: not copied.
+    tools/sweet-hang2rd.py + Mesa cffdump (chl-work/mesa-host) decode the 2014 dump.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

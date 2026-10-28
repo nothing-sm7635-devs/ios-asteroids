@@ -1,0 +1,254 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index b84113e..ef52bcb 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2999,6 +2999,9 @@ void
+ sweet_gpu_mark_lost(void)
+ {
+ 	if (sweet_board_asteroids()) {
++		if (sweet_a810_recover("a submission did not come back")) {
++			return;             /* 2015: soft reset; the hung work is void, the epoch moved */
++		}
+ 		sweet_a810_msm_mark_lost();
+ 		return;
+ 	}
+@@ -3540,7 +3543,7 @@ uint32_t
+ sweet_gpu_epoch(void)
+ {
+ 	if (sweet_board_asteroids()) {
+-		return 0;
++		return sweet_a810_recoveries();
+ 	}
+ 	return a630_recoveries;
+ }
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index f3cf4ad..884cbc5 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1214,6 +1214,26 @@ a810_zap_metadata(const uint8_t *img, const struct gpb_mdt *m, uint64_t *pa)
+ 	return 0;
+ }
+ 
++/*
++ * After CP_SET_SECURE_MODE 0: RBBM_SECVID_TRUST_CNTL 0 and the BR pipe's RB_GC_GMEM_PROTECT (2015). hw_init's non-context
++ * list wrote the GMEM protect while the CP was still secure, where the write does not hold (NativeAdrenoA810HwInit.h says it
++ * is held back until after the secure-mode exit; nothing wrote it then). Snapintosh's A8XX recovery replays the same pair
++ * after the exit (compat/adreno-recover-table.h adreno_recover_secvid, MIT, Acelogic/Snapintosh). The value is A810's
++ * from the non-context list.
++ */
++static void
++a810_secure_exit_regs(const char *when)
++{
++	uint32_t trust = ~0u, prot = ~0u;
++	a810_reg_write(NULL, A810_RBBM_SECVID_TRUST_CNTL, 0);
++	a810_reg_read(NULL, A810_RBBM_SECVID_TRUST_CNTL, &trust);
++	a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, A810_PIPE_BR << A810_CP_APERTURE_CNTL_HOST_PIPEID_SHIFT);
++	a810_reg_write(NULL, A810_RB_GC_GMEM_PROTECT, 0x00900000u);
++	a810_reg_read(NULL, A810_RB_GC_GMEM_PROTECT, &prot);
++	a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, 0);
++	A810_LOG("SWEET A810: %s: after the secure exit: SECVID_TRUST_CNTL %#x, BR RB_GC_GMEM_PROTECT %#x\n", when, trust, prot);
++}
++
+ static int
+ a810_stage15(void)
+ {
+@@ -1297,6 +1317,7 @@ a810_stage15(void)
+ 		a810_fail(15, "CP_SET_SECURE_MODE 0 / CP_MEM_WRITE");
+ 		return 0;
+ 	}
++	a810_secure_exit_regs("stage 15");
+ 	return 1;
+ }
+ 
+@@ -1525,6 +1546,161 @@ sweet_a810_hang_report(const char *why)
+ 	sweet_log_sync();
+ }
+ 
++/*
++ * GPU hang recovery (2015), the A8XX CP soft reset of Snapintosh's EL2 monitor (compat/adreno-ib.c adreno_recover, MIT,
++ * Acelogic/Snapintosh) on this bring-up's own stages: halt the SQE and the GX then CX bus traffic (each acknowledged),
++ * clear the SMMU fault, pulse RBBM_SW_RESET_CMD (A8XX 0x073, at least 100 us), wipe the ring and the memptrs, replay
++ * stage 13's hw_init (it unhalts GBIF) keeping the LLCC SCIDs, stage 14's SQE start and CP_ME_INIT on a re-attached ring,
++ * stage 15's secure-mode exit (the zap shader stays loaded across a soft reset), invalidate the GPU caches, clear the
++ * sticky RBBM interrupts. Every fence handed out before the hang then reads as passed (the hung work is void) and the
++ * next user submission carries the context entry again. At most 8 a boot. Returns 1 when the GPU answers again.
++ */
++static uint32_t a810_recoveries;
++
++static int
++a810_wait_bits(uint32_t reg, uint32_t mask, unsigned us)
++{
++	uint32_t v = 0;
++	for (unsigned t = 0; t <= us; t += 10) {
++		if (!a810_reg_read(NULL, reg, &v) && (v & mask) == mask) {
++			return 0;
++		}
++		delay(10);
++	}
++	return 1;
++}
++
++int
++sweet_a810_recover(const char *why)
++{
++	const char *step = "policy";
++	uint32_t f[5], sc0 = 0, sc1 = 0, v = 0, fence = 0, seen = 0;
++	int ok = 0, wait = -1, st = 0;
++
++	if (!a810_cp_started || !a810_gpu_writes || a810_recoveries >= 8) {
++		A810_LOG("SWEET A810: recovery refused (%s): started %d, %u recoveries so far\n", why, a810_cp_started, a810_recoveries);
++		return 0;
++	}
++	a810_recoveries++;
++	lck_mtx_lock(&a810_lck);
++	const uint32_t old = a810_ring.seqno;
++	a810_reg_read(NULL, 0x3c01, &sc0);                 /* GBIF_SCACHE_CNTL0/1: the LLCC SCIDs, kept */
++	a810_reg_read(NULL, 0x3c02, &sc1);
++	step = "halt";
++	a810_reg_write(NULL, A810_CP_SQE_CNTL, 3);
++	a810_reg_write(NULL, A810_RBBM_GBIF_HALT, 1);
++	if (a810_wait_bits(A810_RBBM_GBIF_HALT_ACK, 1, 1000)) {
++		goto out;
++	}
++	a810_reg_write(NULL, 0x3c45, 1);                    /* GBIF_HALT: client 1, then the arbiter 2 */
++	if (a810_wait_bits(0x3c46, 1, 1000)) {
++		goto out;
++	}
++	a810_reg_write(NULL, 0x3c45, 2);
++	if (a810_wait_bits(0x3c46, 2, 1000)) {
++		goto out;
++	}
++	a810_gpu_context_faults(f);
++	if (f[0] & 0xc00001feu) {
++		a810_gpu_context_clear_fault(f[0]);
++	}
++	step = "reset";
++	a810_reg_write(NULL, 0x073, 1);                     /* RBBM_SW_RESET_CMD */
++	a810_reg_read(NULL, 0x073, &v);
++	delay(150);
++	a810_reg_write(NULL, 0x073, 0);
++	a810_reg_read(NULL, 0x073, &v);
++	a810_reg_read(NULL, A810_CP_SQE_CNTL, &v);
++	if (v & 3) {
++		goto out;
++	}
++	for (size_t i = 0; i < a810_ring.ring_bytes / 4; i++) {
++		a810_ring.ring[i] = 0;
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	step = "hw_init";
++	{
++		const struct gpb_gx_io gio = {NULL, a810_gx_read, a810_gx_write, a810_gx_vote, a810_delay_us};
++		gpb_hw_init(&gio, &a810_hw);
++		if (a810_hw.failed || a810_hw.step != 9) {
++			goto out;
++		}
++	}
++	a810_reg_write(NULL, 0x3c01, sc0);
++	a810_reg_write(NULL, 0x3c02, sc1);
++	step = "cp";
++	{
++		const uint64_t sqe = a810_gbuf[A810_GPU_SQE].iova, bv_rptr = a810_gbuf[A810_GPU_MEMPTRS].iova + 8;
++		a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE, (uint32_t)sqe);
++		a810_reg_write(NULL, A810_CP_SQE_INSTR_BASE + 1, (uint32_t)(sqe >> 32));
++		a810_ring.attached = 0;
++		a810_ring.poisoned = 0;
++		if (a810_ring_attach(&a810_ring, &a810_cp_io, a810_gbuf[A810_GPU_RING].cpu, (size_t)a810_gbuf[A810_GPU_RING].bytes,
++		    a810_gbuf[A810_GPU_RING].iova, a810_gbuf[A810_GPU_MEMPTRS].cpu, (size_t)a810_gbuf[A810_GPU_MEMPTRS].bytes,
++		    a810_gbuf[A810_GPU_MEMPTRS].iova)) {
++			goto out;
++		}
++		a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV, (uint32_t)bv_rptr);
++		a810_reg_write(NULL, A810_CP_RB_RPTR_ADDR_BV + 1, (uint32_t)(bv_rptr >> 32));
++		a810_reg_write(NULL, A810_CP_SQE_CNTL, A810_INIT_CP_SQE_CNTL);
++		if (a810_cp_init(&a810_ring, sqe, a810_gbuf[A810_GPU_PWRUP].iova, &fence) ||
++		    a810_ring_wait(&a810_ring, fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, &seen)) {
++			goto out;
++		}
++	}
++	step = "secure";
++	{
++		uint32_t secure[2] = {0, 0};
++		if (a810_pm4_type7(GPB_CP_SET_SECURE_MODE, 1, &secure[0]) ||
++		    !a810_mem_write(a810_gbuf[A810_GPU_SCRATCH].iova + 4, secure, 2, 0x05ec0ff2, &fence, &seen, &st, &wait) || st || wait) {
++			goto out;
++		}
++		a810_secure_exit_regs("recovery");
++	}
++	step = "scrub";
++	{
++		uint32_t w[10];
++		if (a810_pm4_type7(0x17, 1, &w[0]) || a810_pm4_type7(0x46, 1, &w[2]) || a810_pm4_type7(0x46, 1, &w[4]) ||
++		    a810_pm4_type7(0x46, 1, &w[6]) || a810_pm4_type7(0x17, 1, &w[8])) {
++			goto out;
++		}
++		w[1] = 1;               /* CP_THREAD_CONTROL: BR */
++		w[3] = 0x18;            /* CP_EVENT_WRITE7: CCU_INVALIDATE_DEPTH */
++		w[5] = 0x19;            /* CCU_INVALIDATE_COLOR */
++		w[7] = 0x33;            /* CACHE_INVALIDATE7 */
++		w[9] = 3;               /* CP_THREAD_CONTROL: both */
++		if (a810_ring_submit(&a810_ring, w, 10, &fence) ||
++		    a810_ring_wait(&a810_ring, fence, a810_now, a810_idle, A810_FENCE_TIMEOUT_US, &seen)) {
++			goto out;
++		}
++	}
++	a810_reg_read(NULL, A810_RBBM_INT_0_STATUS, &v);
++	a810_reg_write(NULL, A810_RBBM_INT_CLEAR_CMD, v);
++	/* the hung work is void: every fence handed out so far reads as passed, numbering goes on from there */
++	a810_ring.seqno = a810_ring.completed = old;
++	a810_ring.fence[1] = old;
++	a810_ring.fence[3] = old;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	a810_ring_request_reset(&a810_ring);
++	ok = 1;
++	step = "done";
++out:
++	if (!ok) {
++		a810_cp_state("recovery failed");
++	}
++	lck_mtx_unlock(&a810_lck);
++	A810_LOG("SWEET A810: RECOVERY %u (%s): %s at step %s, fences up to %u void\n", a810_recoveries, why,
++	    ok ? "the GPU answers again" : "FAILED", step, old);
++	sweet_log_sync();
++	return ok;
++}
++
++uint32_t
++sweet_a810_recoveries(void)
++{
++	return a810_recoveries;
++}
++
+ /* The CP's indirect-buffer pointers (a6xx.xml A8XX-: CP_IB1_BASE 0x900, REM 0x902, INIT 0x903, IB2 0x904.., IB3 0x908..), for
+  * the BR pipe (out[0..11]) and the BV pipe (out[12..23]): base lo/hi, remaining and initial dwords of IB1, IB2, IB3. */
+ bool
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index 209bffe..ec1136b 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -51,6 +51,9 @@ void sweet_a810_hang_report(const char *why);
+ bool sweet_a810_msm_fault_check(void);
+ /* CP_IB1/2/3 base, remaining and initial size for BR (0..11) and BV (12..23); false before the CP ran. */
+ bool sweet_a810_ib_state(uint32_t out[24]);
++/* CP soft reset after a hang (2015): 1 when the GPU answers again; at most 8 a boot. */
++int sweet_a810_recover(const char *why);
++uint32_t sweet_a810_recoveries(void);
+ 
+ /* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
+ bool sweet_a810_msm_ready(void);
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 7a67a61..6f79fb0 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -983,6 +983,11 @@ SweetAdrenoUserClient::waitFenceCall(struct sweet_msm_wait_fence *r)
+ 		uint32_t epoch = sweet_gpu_epoch();
+ 		ret = waitFence(r->fence, ns) && epoch == sweet_gpu_epoch() ? kIOReturnSuccess :
+ 		    ((sweet_gpu_ready() && epoch == sweet_gpu_epoch()) ? kIOReturnTimeout : kIOReturnIOError);
++		/* 2015: a recovery made every earlier fence pass (its work void); Turnip takes an error here as a lost device for
++		 * good, so the wait succeeds and one frame is wrong instead */
++		if (ret == kIOReturnIOError && sweet_gpu_ready() && sweet_gpu_fence_done(r->fence)) {
++			ret = kIOReturnSuccess;
++		}
+ 	}
+ 	sweet_gpu_unlock();
+ 	return ret;

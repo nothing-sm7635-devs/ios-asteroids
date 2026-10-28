@@ -427,6 +427,7 @@ def stage_tweaks(a, root):
         # staged apps -> /Applications, bluetooth (BT_HCI_TRANSPORT, BlueTool stub, hcitest), PosterBoard + sweetfp.dylib,
         # first-boot job (sweetuicache registration, jailbreak post-install)
         rt.auto(root)
+        rt.wallpaper_png(root)      # HEIC wallpaper images as PNG (no HEVC decoder on this phone)
         if os.environ.get('RENEGADE_CHLOROPHYLL'):     # Chlorophyll as backboardd's compositor (asteroids/build-chlorophyll.sh output)
             rt.chlorophyll(root, os.environ['RENEGADE_CHLOROPHYLL'])
         rt.audio(root)

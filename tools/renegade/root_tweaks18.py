@@ -648,6 +648,64 @@ def write_file(path, text, mode=0o644):
     os.chmod(path, mode)
 
 
+def wallpaper_png(root):
+    """The wallpaper collections' Core Animation bundles (.ca: main.caml, assetManifest.caml, assets/*.HEIC) get PNG copies of
+    their HEIC images and point at them. This phone has no hardware HEVC decoder, so ImageIO cannot decode HEIC and such a
+    wallpaper draws black (UniXNU-rs 910a19d did the same for iPadOS 17's 7570 through a union overlay; on our HFS+ root the
+    bundle is edited in place). ImageMagick with libheif decodes on the host; the HEIC files stay. Skipped (noted) without it."""
+    import subprocess
+    conv = shutil.which('convert') or shutil.which('magick')
+    if not conv:
+        note_skip('wallpaper_png', 'no ImageMagick on the host')
+        return
+    try:
+        fmts = subprocess.run([conv, '-list', 'format'], capture_output=True, text=True).stdout
+    except OSError:
+        fmts = ''
+    if 'HEIC' not in fmts:
+        note_skip('wallpaper_png', 'ImageMagick without HEIC (libheif) support')
+        return
+    done = bundles = 0
+    for top in ('Library/Wallpaper', 'System/Library/Wallpaper'):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, top)):
+            if not dirpath.endswith('.ca') or 'main.caml' not in filenames:
+                continue
+            assets = os.path.join(dirpath, 'assets')
+            heics = [f for f in (os.listdir(assets) if os.path.isdir(assets) else []) if f.lower().endswith(('.heic', '.heif'))]
+            if not heics:
+                continue
+            renames = {}
+            for h in heics:
+                png = os.path.splitext(h)[0] + '.png'
+                dst = os.path.join(assets, png)
+                if not os.path.exists(dst):
+                    st = os.stat(os.path.join(assets, h))
+                    subprocess.run([conv, os.path.join(assets, h), 'png32:' + dst], check=True)
+                    os.chown(dst, st.st_uid, st.st_gid)
+                    os.chmod(dst, st.st_mode & 0o7777)
+                    done += 1
+                renames['assets/' + h] = 'assets/' + png
+            for caml in ('main.caml', 'assetManifest.caml'):
+                cp = os.path.join(dirpath, caml)
+                if not os.path.exists(cp):
+                    continue
+                with open(cp, 'rb') as f:
+                    text = f.read()
+                new = text
+                for a, b in renames.items():
+                    new = new.replace(a.encode(), b.encode())
+                if new != text:
+                    st = os.stat(cp)
+                    tmp = cp + '.renegade-new'
+                    with open(tmp, 'wb') as f:
+                        f.write(new)
+                    os.chown(tmp, st.st_uid, st.st_gid)
+                    os.chmod(tmp, st.st_mode & 0o7777)
+                    os.replace(tmp, cp)
+            bundles += 1
+    print('wallpaper_png: %d HEIC image(s) converted to PNG in %d wallpaper bundle(s)' % (done, bundles))
+
+
 def staged_apps(root):
     # The removable built-in apps (Safari, Photos, Messages, Camera, ...) ship in
     # /private/var/staged_system_apps; iOS installs them during first-boot setup, which our

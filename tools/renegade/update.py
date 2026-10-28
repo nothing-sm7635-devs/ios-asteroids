@@ -296,6 +296,7 @@ def main():
         jb_owners = os.path.join(tempfile.gettempdir(), f'renegade-update-jb-{os.getpid()}.tsv')
         rt.base(mnt)                # the idempotent part of the original tweaks stage (event timing profiles, ...)
         rt.staged_apps(mnt)
+        rt.wallpaper_png(mnt)        # HEIC wallpaper images as PNG (no HEVC decoder on this phone)
         rt.sweetmetrics(mnt)
         if feats['bluetooth']:
             rt.bluetooth(mnt)

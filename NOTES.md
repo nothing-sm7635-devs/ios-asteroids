@@ -359,6 +359,20 @@
     (WidgetRenderer), HEIC -> PNG for the iOS_17/Clownfish wallpaper collections, kernel-side per-submission clean of
     read-only imports, fsctl command logging for containermanagerd. Ruled out here: launch-constraint refusals (0 in our
     log), vnode jetsam (none), cryptex paths (/System/Cryptexes/OS -> /private/preboot/Cryptexes/OS -> / resolves).
+  * Apple's APFS via prelinked kexts (UniXNU's route; Snapintosh runs the whole stock kernelcache under an EL2 monitor, which
+    Gunyah's EL2 rules out here) -- checked 2026-10-28, NOT viable now:
+      - version: the 23G90 iPhone12,1 kernelcache is xnu-12377.162.14 (Darwin 25.6.0, RELEASE_ARM64_T8030); our tree is
+        xnu-12377.121.6, which is also the NEWEST xnu-12377 tag Apple has published (apple-oss-distributions: .1.9 .41.6
+        .61.12 .81.4 .101.15 .121.6). Prelinking needs an exact match (kexts bind to kernel structure layouts through
+        kpi.private/unsupported/dsep), so it waits for Apple's 12377.16x source (or an iOS 26.x kernelcache that IS .121.6).
+      - CPU: com.apple.filesystems.apfs 2811.160.7 is arm64e with ~4100 non-hint PAC instructions (RETAB 1743, BLRAA
+        1082, AUTDA 851, PACIA 305, XPAC 66, BRAA 50, PACDA 41, ...; renegade scan) that fault on a CPU without PAC, plus
+        authenticated pointers in its data; pacstrip-style rewriting and relinking of the kext and of every dependency
+        would be needed.
+      - dependencies: IOStorageFamily, kec.corecrypto, AppleImage4, AppleEffaceableStorage, CoreAnalyticsFamily,
+        AppleARMWatchdogTimer (all arm64e Apple kexts), kpi.bsd/iokit/libkern/mach/private/unsupported/dsep.
+    Kernelcaches (release + research) in research/ios26/kc (ipsw download --kernel; not in git). Decision: stay on HFS+
+    with targeted emulation (decmpfs 2019, data protection 2021, fsctl next); revisit when Apple publishes 12377.16x.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

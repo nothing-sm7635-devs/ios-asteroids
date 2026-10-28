@@ -1553,6 +1553,8 @@ def base(root):
 def auto(root):
     """The Renegade auto-fixes, in build order (the jb payload is copied by jailbreak_userland, it needs a staging
     step with downloads and an owner map)."""
+    console_jobs(root)       # daemons' os_log on the console (mkroot-full calls auto(), not main())
+    ifnamer_wait(root)       # Settings/wifid: no 300 s wait for a network stack
     staged_apps(root)
     if enabled('bluetooth'):
         bluetooth(root)

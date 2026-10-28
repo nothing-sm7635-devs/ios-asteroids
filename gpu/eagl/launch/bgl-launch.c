@@ -239,7 +239,7 @@ static void clean_legibility_pools(void)
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
 #define BB_WAIT   "bgmtl-bb.wait"
 #define BB_TUDEBUG "bgmtl-bb.tudebug"
-#define BB_TUDEBUG_DEFAULT "sysmem,noubwc,nocb"
+#define BB_TUDEBUG_DEFAULT "sysmem,noubwc,nocb,nolrz"
 #define BB_SKIPCOMPUTE "bgmtl-bb.skipcompute"
 #define BB_TEXPOOL "bgmtl-bb.texpool"
 #define BB_TEXPOOL_DEFAULT "0"

@@ -1,0 +1,84 @@
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+index 942dc24..54f0c32 100644
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -13384,6 +13384,69 @@ handle_auth(vnode_t vp, u_long cmd, caddr_t data, u_long options, vfs_context_t
+  * Make a filesystem-specific control call:
+  */
+ /* ARGSUSED */
++/*
++ * Bergamota 2023 (asteroids): fsctl requests a file system without them answers with ENOTTY, taken over here for the
++ * HFS+ root iOS 26 runs on. (1) FSIOC_CAS_BSDFLAGS (libcopyfile, every copy with attributes): done with a getattr/setattr
++ * pair; not atomic, which no caller on a single-user phone notices. (2) APFS's own group 'J' commands: the ones that only
++ * set a state (no output, or APFSIOC_MARK_PURGEABLE = 'J' 68, which libremovefile and PosterBoard send to every directory
++ * tree and ignore the answer of) are answered 0 as if the state were kept; the ones that return data stay ENOTTY, a
++ * caller reading zeros would be worse off. Each (command, answer) is logged once. Boot-arg sweetfsctl=0 turns it off.
++ */
++static int
++sweet_fsctl_fallback(vnode_t vp, u_long cmd, caddr_t data, vfs_context_t ctx)
++{
++	static int enabled = -1;
++	static u_long logged[16];
++	static unsigned nlogged;
++	mount_t mp = vnode_mount(vp);
++	int error = ENOTTY;
++	unsigned i;
++
++	if (enabled < 0) {
++		uint32_t v = 1;
++		PE_parse_boot_argn("sweetfsctl", &v, sizeof(v));
++		enabled = v != 0;
++	}
++	if (!enabled || mp == NULL || strcmp(mp->mnt_vfsstat.f_fstypename, "apfs") == 0) {
++		return ENOTTY;
++	}
++	if (cmd == FSIOC_CAS_BSDFLAGS) {
++		struct fsioc_cas_bsdflags *cas = (struct fsioc_cas_bsdflags *)data;
++		struct vnode_attr va;
++		VATTR_INIT(&va);
++		VATTR_WANTED(&va, va_flags);
++		error = vnode_getattr(vp, &va, ctx);
++		if (error == 0 && !VATTR_IS_SUPPORTED(&va, va_flags)) {
++			error = ENOTTY;
++		}
++		if (error == 0) {
++			cas->actual_flags = va.va_flags;
++			if (va.va_flags == cas->expected_flags && cas->new_flags != cas->expected_flags) {
++				VATTR_INIT(&va);
++				VATTR_SET(&va, va_flags, cas->new_flags);
++				error = vnode_setattr(vp, &va, ctx);
++				if (error == 0) {
++					cas->actual_flags = cas->new_flags;
++				}
++			}
++		}
++	} else if (IOCGROUP(cmd) == 'J' && (!(cmd & IOC_OUT) || cmd == _IOWR('J', 68, uint64_t))) {
++		error = 0;
++	}
++	for (i = 0; i < nlogged; i++) {
++		if (logged[i] == cmd) {
++			return error;
++		}
++	}
++	if (nlogged < 16) {
++		logged[nlogged++] = cmd;
++		printf("SWEET FS: fsctl %#lx ('%c' %lu, %s) on %s answered %d\n", cmd, (int)IOCGROUP(cmd), cmd & 0xff,
++		    cmd == FSIOC_CAS_BSDFLAGS ? "CAS_BSDFLAGS" : (cmd & IOC_OUT) ? "returns data" : "sets state",
++		    mp->mnt_vfsstat.f_fstypename, error);
++	}
++	return error;
++}
++
+ static int
+ fsctl_internal(proc_t p, vnode_t *arg_vp, u_long cmd, user_addr_t udata, u_long options, vfs_context_t ctx)
+ {
+@@ -13677,6 +13740,9 @@ unlock:
+ 		}
+ 		/* Invoke the filesystem-specific code */
+ 		error = VNOP_IOCTL(vp, cmd, data, (int)options, ctx);
++		if (error == ENOTTY) {
++			error = sweet_fsctl_fallback(vp, cmd, data, ctx);
++		}
+ 	}
+ 	} /* end switch stmt */
+ 

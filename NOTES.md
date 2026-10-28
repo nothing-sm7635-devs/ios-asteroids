@@ -271,6 +271,18 @@
     now logged, 0003); 6 IOSurfaces 1026x1026 refused by Turnip's import (VK_ERROR_INVALID_EXTERNAL_HANDLE), copied.
     Next boot = diagnostics: root with Chlorophyll 0003, image ios26-ast16-scan (kernel 16, sweetscan=MobileSafari,
     Preferences,backboardd,SpringBoard: the kernel's crash string scan for the exception text).
+  * Architecture pass (2026-10-28), instead of one symptom at a time. backboardd composites three kinds of texture:
+    IOSurface-backed (app backing stores, snapshots: imported zero-copy through SURFACE_BO, else copied), CPU images in
+    shared memory (CA::Render images: asset catalogs, the wallpaper, glyphs, icons: newTextureWithBytesNoCopy, refreshed at
+    each use), offscreen targets. The ast16 "832 bytes per row for rows that need 3312" are the second kind in a 4x4
+    BLOCK-COMPRESSED format: 828 texels = 207 blocks x 16 bytes = 3312, and length / texel rows = 3312 / 4 ~ 832 (580 ->
+    145 x 16 = 2320, 587 ~ 2320 / 4): Chlorophyll divided the length by texel rows, not block rows, so no compressed
+    asset-catalog image (the wallpaper among them) was ever uploaded. Chlorophyll 0004: chl_format_block() (the format
+    table's block size) and the pitch from block rows; a buffer shorter than the image is skipped instead of overread.
+    build-chlorophyll.sh now resets the clone and applies the whole series (its per-patch "already applied" test failed
+    once 0004 changed lines 0003 added). Other ast16 log failures checked: kernel syscall errors are ENOENT lookups
+    (localisations, container layout), containermanagerd EEXIST/ENOTTY fsctl, csops ERANGE: none explains the UI. Turnip
+    caps its heap at min(RAM share, VA window 1.5 GiB): the empty "texture refused" may be its OOM; 0003 now logs it.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

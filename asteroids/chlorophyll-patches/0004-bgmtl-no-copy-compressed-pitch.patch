@@ -1,0 +1,60 @@
+diff --color -ru a/air/chl.h b/air/chl.h
+--- a/air/chl.h	2026-10-28 14:21:56.494278403 +0530
++++ b/air/chl.h	2026-10-28 14:21:56.500312426 +0530
+@@ -88,6 +88,8 @@
+                                      unsigned level_count, unsigned base_slice, unsigned slice_count,
+                                      const unsigned char swizzle[4], char *why, size_t why_size);
+ /* -replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage: (synchronous: visible to all later GPU work) */
++/* A pixel format's block (texels wide and high, bytes); 1x1 for an uncompressed format. 0 when the format is unknown. */
++int chl_format_block(unsigned pixel_format, unsigned *bw, unsigned *bh, unsigned *bytes);
+ int chl_texture_replace(struct chl_texture *tex, unsigned level, unsigned slice, const unsigned origin[3], const unsigned size[3],
+                         const void *bytes, size_t bytes_per_row, size_t bytes_per_image, char *why, size_t why_size);
+ /* -getBytes:bytesPerRow:bytesPerImage:fromRegion:mipmapLevel:slice: (waits for the GPU work submitted before it) */
+diff --color -ru a/air/chl_vk.c b/air/chl_vk.c
+--- a/air/chl_vk.c	2026-10-28 14:21:56.532106061 +0530
++++ b/air/chl_vk.c	2026-10-28 14:21:56.535178201 +0530
+@@ -194,6 +194,19 @@
+    return NULL;
+ }
+ 
++/* A pixel format's block: width and height in texels and bytes (1x1 for an uncompressed format); 0 when it is unknown. */
++int
++chl_format_block(unsigned pixel_format, unsigned *bw, unsigned *bh, unsigned *bytes)
++{
++   const struct chl_format *f = chl_format(pixel_format);
++   if (!f)
++      return 0;
++   *bw = f->bw;
++   *bh = f->bh;
++   *bytes = f->bytes;
++   return 1;
++}
++
+ static VkImageAspectFlags
+ vk_aspects(const struct chl_format *f)
+ {
+diff --color -ru a/src/bgmtl.m b/src/bgmtl.m
+--- a/src/bgmtl.m	2026-10-28 14:21:56.577808461 +0530
++++ b/src/bgmtl.m	2026-10-28 14:21:56.471278521 +0530
+@@ -2234,7 +2234,20 @@
+    }
+    if (_ncBytes) {
+       const unsigned o[3] = { 0, 0, 0 }, sz[3] = { _desc.width, _desc.height, 1 };
+-      if (chl_texture_replace(_tex, 0, 0, o, sz, _ncBytes, _ncLength / (_desc.height ? _desc.height : 1), 0, why, sizeof(why)) != 0)
++      /* The caller passes the bytes, not their pitch. A block-compressed image (ASTC/BC/ETC: CoreAnimation's asset-catalog
++       * images, the wallpaper among them) has one row per block of texel rows, so the pitch is the length over the BLOCK rows;
++       * taking texel rows made it a quarter of a row for 4x4 blocks and every such image was refused (asteroids ast16: "832
++       * bytes per row for a region whose rows need 3312", 828 texels = 207 blocks of 16 bytes). The tight pitch when the
++       * length holds more than the base level (mipmaps after it). */
++      unsigned bw = 1, bh = 1, bb = 4;
++      chl_format_block(_desc.pixel_format, &bw, &bh, &bb);
++      const size_t rows = (_desc.height + bh - 1) / bh, tight = (size_t)((_desc.width + bw - 1) / bw) * bb;
++      size_t pitch = rows ? _ncLength / rows : tight;
++      if (_desc.mip_levels > 1) pitch = tight;
++      if ((size_t)_ncLength < tight * rows)   /* less than the image: reading it would run past the caller's memory */
++         BG_LOG("no-copy texture refresh skipped: %lu bytes for %zu rows of %zu (%ux%u fmt %lu)\n", (unsigned long)_ncLength, rows,
++                tight, _desc.width, _desc.height, (unsigned long)_desc.pixel_format);
++      else if (chl_texture_replace(_tex, 0, 0, o, sz, _ncBytes, pitch < tight ? tight : pitch, 0, why, sizeof(why)) != 0)
+          BG_LOG("no-copy texture refresh: %s (%ux%u fmt %lu, %lu bytes, %u levels)\n", why, _desc.width, _desc.height,
+                 (unsigned long)_desc.pixel_format, (unsigned long)_ncLength, _desc.mip_levels);
+    }

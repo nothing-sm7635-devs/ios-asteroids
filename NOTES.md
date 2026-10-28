@@ -375,6 +375,18 @@
     with targeted emulation (decmpfs 2019, data protection 2021, fsctl next); revisit when Apple publishes 12377.16x.
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
+
+* **ast17 boot result (18:30Z, logs/ast17 + logs/ast17-var): backboardd NOT on Metal, kernel 2021 is the cause.** With 2021's data
+  protection emulation, launchd's `dirs_cleaner` boot task (silent on every earlier kernel) now runs: its RENAME_SWAP of
+  /private/var/tmp, /private/var/run, /private/var/mobile/tmp, /private/var/boot fails ENOTSUP on HFS+ and it then empties them, so
+  the root's `bgmtl-bb.arm` / `bgmtl.arm` (present in research/ios26/ios26-root-full.simg 18:10, verified with hfsx) were gone:
+  no bgl-backboardd.log, bgmtl.log "Mercury not armed, stock", backboardd on CA's OpenGL path crashed 4x
+  (`Assertion failed: found != slist->end(), push_surface, ogl-context.cpp:1186`). 2021 also did NOT fix PosterBoard's -2218
+  (same error for Mercury and Collections). PosterBoard's only non-ENOENT failures around its data store: clonefileat ENOTSUP,
+  ffsctl ENOTTY (cmd not logged yet), fgetxattr EINVAL, removexattr ENOATTR. Safari still aborts (ns 2 code 6).
+  Next test: reflash the same root simg (the flags must come back) + `asteroids/out/ios26-ast17-nodp-boot.img`
+  (= ast17 + `sweetdataprotect=0`). Kernel follow-up: default 2021 to off; never keep boot switches only in /private/var/tmp
+  if dirs_cleaner can run (seed them from a persistent place).
 * State of the pipeline:
   - Kernel CI run 40687928993 = Bergamota 4351c0c (patches through 2021: write-combine reassertion, context switch on
     client change, 50 ms WPTR kick, GEM_MAX 16384; data protection xattr emulation). When the user names the zip:

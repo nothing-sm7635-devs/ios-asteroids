@@ -238,7 +238,7 @@ static void clean_legibility_pools(void)
 #define BB_GPU_WAIT 90
 #define GPU_SERVICE "SweetAdreno630"   /* SWEET_GPU_SERVICE_NAME, xnu/gpu-abi/sweet_adreno_abi.h */
 
-static char g_wait_msg[160];
+static char g_wait_msg[160], g_note[160];
 
 static void bb_off(const char *why)
 {
@@ -291,6 +291,24 @@ static int metal_mode(void)
 	struct stat st;
 	char boot[64] = "", was[64] = "";
 	int alive = 1;
+	/* bgmtl-bb.off is per boot: the first start of a new boot (bgmtl-bb.state names another boot) removes it, so one bad boot
+	 * does not keep the GPU off for good (/private/var/tmp is not cleared at boot on this root; ast11 2026-10-28 ran plain
+	 * because the previous boot's DEAD-MAN had written it) */
+	boot_uuid(boot, sizeof boot);
+	{
+		FILE *sf = fopen(BB_STATE, "r");
+		int a = 1;
+		if (sf) {
+			if (fscanf(sf, "alive=%d boot=%63s", &a, was) != 2)
+				was[0] = 0;
+			fclose(sf);
+		}
+		if (boot[0] && strcmp(was, boot) != 0 && stat(BB_OFF, &st) == 0) {
+			unlink(BB_OFF);
+			snprintf(g_note, sizeof g_note, "bgl-launch: new boot: removed the previous boot's %s\n", BB_OFF);
+		}
+		was[0] = 0;
+	}
 	if (stat(BB_ARM, &st) != 0 || stat(BB_OFF, &st) == 0)
 		return 0;
 	/* the runtime is libchlorophyll.dylib since Turnip (Chlorophyll turnip/build-metal.sh), libbgair.dylib on the Gallium build */
@@ -298,7 +316,6 @@ static int metal_mode(void)
 	    (!readable(BB_LIBDIR, "libchlorophyll.dylib") && !readable(BB_LIBDIR, "libbgair.dylib")) ||
 	    !readable(BB_LIBDIR, "libdrm.2.dylib"))
 		return 0;
-	boot_uuid(boot, sizeof boot);
 	FILE *f = fopen(BB_STATE, "r");
 	if (f) {
 		if (fscanf(f, "alive=%d boot=%63s", &alive, was) != 2)
@@ -353,6 +370,7 @@ int main(int argc, char **argv)
 		if (fd >= 0) {
 			dup2(fd, 2);
 			close(fd);
+			fputs(g_note, stderr);
 			fputs(g_wait_msg, stderr);
 			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll), TU_DEBUG=%s, BGMTL_SKIP_COMPUTE=%s\n",
 			    BB_LIBDIR, tud[0] ? tud : "(none)", skip[0] ? skip : "(none)");

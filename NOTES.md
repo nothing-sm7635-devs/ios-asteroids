@@ -196,6 +196,10 @@
     upstream's; shared IOSurface handles are refcounted by Turnip. Culprit not found yet.
     Mitigation, kernel 2013: closed BOs are quarantined (still mapped, pages and surface kept) until 64 more submissions
     complete (sweetgpuquar=N, 0 = old behaviour); an allocation that finds no address space drains it first.
+  * ast11 (CI 40623606600 = 6bd1eb4, quarantine; root NOT reflashed, 2026-10-28): NOT A TEST of 2013: backboardd ran plain all
+    boot because ast10b's DEAD-MAN left /private/var/tmp/bgmtl-bb.off and nothing clears /private/var/tmp at boot (iOS logs
+    unchanged from ast10b, no GPU submissions in logs/ast11). Fix: bgl-launch removes bgmtl-bb.off on the first start of a
+    new boot (bgmtl-bb.state names another boot). Needs a root update + flash, then boot ast11 again.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

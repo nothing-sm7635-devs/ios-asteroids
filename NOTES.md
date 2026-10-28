@@ -236,6 +236,19 @@
     QuartzCore abort. Kernel 2017: a page bitmap allocator (next-fit, 48 KiB for the window; frees can no longer be lost;
     the submission line reports pages taken). Boot images drop sweetsurf_lossless=1 (it refused the wallpaper's '&BGA'
     surfaces; only needed for the CPU renderer).
+  * ast15 (kernel 15 = 9992c62: 2017 bitmap; root TU_DEBUG=sysmem,noubwc; no sweetsurf_lossless; 2026-10-28): user: no
+    flicker yet, still glitches/black wallpaper/no widgets/no control centre, Safari does not launch, Settings freezes.
+    Logs logs/ast15(+var). 7 recoveries (max was 8). "no GPU address space" 215x with only 21% of the window taken
+    (83319 of 393216 pages): 2017's NEXT-FIT scattered long-lived small BOs over the whole window, no 11-12 MiB hole left
+    (host simulation of the kernel code reproduces next-fit failing and segregated first-fit not; the allocator never
+    missed an existing run). The refused textures were RGBA16Float full-screen offscreens (209x): the wallpaper, widgets
+    and control centre compositing. Safari (sig 6 at launch, 4x) and Settings: "decmpfs: tried to access a compressed file
+    of unregistered type 12" (72x; also sweetuicache, MobilePhone, watchdogd): iOS LZFSE-compresses files at run time
+    (none in the built image: catalog scan, 0 UF_COMPRESSED) and this kernel has no decompressor. Hang dump (noubwc): no
+    UBWC any more, MRT0 BGRA8 linear + MRT1 RGBA16F tiled again; cause still open (a [[color(1)]] framebuffer-fetch skip
+    was logged once). Kernel 2018: small (<1 MiB) BOs first-fit in the lower half, large in the upper half; HFS refuses
+    UF_COMPRESSED and drops VOL_CAP_FMT_DECMPFS_COMPRESSION; up to 64 recoveries a boot. Reflash the root once to drop
+    the files already compressed on the phone.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

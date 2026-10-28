@@ -1,0 +1,125 @@
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index 884cbc5..59c4730 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1553,7 +1553,8 @@ sweet_a810_hang_report(const char *why)
+  * stage 13's hw_init (it unhalts GBIF) keeping the LLCC SCIDs, stage 14's SQE start and CP_ME_INIT on a re-attached ring,
+  * stage 15's secure-mode exit (the zap shader stays loaded across a soft reset), invalidate the GPU caches, clear the
+  * sticky RBBM interrupts. Every fence handed out before the hang then reads as passed (the hung work is void) and the
+- * next user submission carries the context entry again. At most 8 a boot. Returns 1 when the GPU answers again.
++ * next user submission carries the context entry again. At most 64 a boot (8 until 2018: ast15 used 7 in one session).
++ * Returns 1 when the GPU answers again.
+  */
+ static uint32_t a810_recoveries;
+ 
+@@ -1577,7 +1578,7 @@ sweet_a810_recover(const char *why)
+ 	uint32_t f[5], sc0 = 0, sc1 = 0, v = 0, fence = 0, seen = 0;
+ 	int ok = 0, wait = -1, st = 0;
+ 
+-	if (!a810_cp_started || !a810_gpu_writes || a810_recoveries >= 8) {
++	if (!a810_cp_started || !a810_gpu_writes || a810_recoveries >= 64) {
+ 		A810_LOG("SWEET A810: recovery refused (%s): started %d, %u recoveries so far\n", why, a810_cp_started, a810_recoveries);
+ 		return 0;
+ 	}
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index ec1136b..fd31957 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -51,7 +51,7 @@ void sweet_a810_hang_report(const char *why);
+ bool sweet_a810_msm_fault_check(void);
+ /* CP_IB1/2/3 base, remaining and initial size for BR (0..11) and BV (12..23); false before the CP ran. */
+ bool sweet_a810_ib_state(uint32_t out[24]);
+-/* CP soft reset after a hang (2015): 1 when the GPU answers again; at most 8 a boot. */
++/* CP soft reset after a hang (2015): 1 when the GPU answers again; at most 64 a boot. */
+ int sweet_a810_recover(const char *why);
+ uint32_t sweet_a810_recoveries(void);
+ 
+diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
+index 9305bd0..fa18b11 100644
+--- a/bsd/dev/sweet_a810_msm.c
++++ b/bsd/dev/sweet_a810_msm.c
+@@ -4,9 +4,11 @@
+  * SweetAdreno.cpp calls the sweet_gpu_* functions of sweet_a630.c; on asteroids each of those forwards here
+  * (sweet_board_asteroids()), and this file answers them with the A810 that sweeta810=16 brought up (sweet_a810_api.h).
+  * Differences from the A630 backend that the user client does not see:
+- *   - GPU addresses are [SWEET_A810_VA_START, SWEET_A810_VA_END), one bit per 4 KiB page, next-fit (2017: the A630's
+- *     512-entry free list overflowed on asteroids and dropped every free it could not merge, ast14: 2640 ranges lost
+- *     until no texture could be allocated).
++ *   - GPU addresses are [SWEET_A810_VA_START, SWEET_A810_VA_END), one bit per 4 KiB page (2017: the A630's 512-entry free
++ *     list overflowed on asteroids and dropped every free it could not merge, ast14: 2640 ranges lost). First-fit, small
++ *     allocations (under 1 MiB) in the lower half and large ones in the upper half, each falling back to the whole window
++ *     (2018: 2017's next-fit scattered long-lived small BOs over the whole window and full-screen textures found no hole
++ *     with 21% of it taken, ast15).
+  *   - Page maps are collected into physically contiguous runs and entered at vm_flush (each sweet_a810_vm_map is one
+  *     TLB invalidate). A bitmap of mapped pages lets a map over a page that is still mapped replace it (the A630's
+  *     page-table write did) and lets an unmap skip pages that were never mapped.
+@@ -44,7 +46,7 @@ extern void sweet_log_sync(void);               /* sweet_ufs.c */
+ #define AM_PAGES        ((SWEET_A810_VA_END - SWEET_A810_VA_START) / AM_PAGE)
+ 
+ static uint64_t *am_used;                       /* one bit per page of the window: taken from the allocator */
+-static uint64_t am_hint, am_used_pages;         /* next-fit start (page index); pages taken */
++static uint64_t am_used_pages;                  /* pages taken */
+ static bool am_inited, am_lost;
+ static uint8_t *am_mapped;                      /* one bit per page of the window */
+ static uint32_t am_last;                        /* the newest fence handed out */
+@@ -182,19 +184,21 @@ am_find(uint64_t from, uint64_t to, uint64_t pages, uint64_t *first)
+ 	return false;
+ }
+ 
++#define AM_SMALL_PAGES  256                     /* 1 MiB: below, the lower half of the window */
+ bool
+ sweet_a810_msm_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
+ {
+-	uint64_t need = size + AM_GUARD, pages = need / AM_PAGE, first = 0;
++	uint64_t need = size + AM_GUARD, pages = need / AM_PAGE, first = 0, mid = AM_PAGES / 2;
+ 
+ 	if (!sweet_a810_msm_ready() || size == 0 || (size & (AM_PAGE - 1)) || pages > AM_PAGES) {
+ 		return false;
+ 	}
+-	if (!am_find(am_hint, AM_PAGES, pages, &first) && !am_find(0, AM_PAGES, pages, &first)) {
++	bool found = pages < AM_SMALL_PAGES ? am_find(0, mid, pages, &first) : am_find(mid, AM_PAGES, pages, &first);
++	if (!found && !am_find(0, AM_PAGES, pages, &first)) {
++		printf("SWEET GPU: A810 no run of %llu pages (%llu of %llu taken)\n", pages, am_used_pages, (uint64_t)AM_PAGES);
+ 		return false;
+ 	}
+ 	am_used_mark(first, pages, true);
+-	am_hint = first + pages < AM_PAGES ? first + pages : 0;
+ 	*iova = SWEET_A810_VA_START + first * AM_PAGE;
+ 	*taken = need;
+ 	return true;
+diff --git a/bsd/sweet_hfs/core/hfs_vfsops.c b/bsd/sweet_hfs/core/hfs_vfsops.c
+index 3cb4b06..7bb5333 100644
+--- a/bsd/sweet_hfs/core/hfs_vfsops.c
++++ b/bsd/sweet_hfs/core/hfs_vfsops.c
+@@ -4126,9 +4126,7 @@ hfs_vfs_getattr(struct mount *mp, struct vfs_attr *fsap, __unused vfs_context_t
+ 				VOL_CAP_FMT_FAST_STATFS | 
+ 				VOL_CAP_FMT_2TB_FILESIZE |
+ 				VOL_CAP_FMT_HIDDEN_FILES |
+-#if HFS_COMPRESSION
+-				VOL_CAP_FMT_DECMPFS_COMPRESSION |
+-#endif
++				/* 2018: no VOL_CAP_FMT_DECMPFS_COMPRESSION: no decompressor is registered (hfs_set_bsd_flags) */
+ #if CONFIG_HFS_DIRLINK
+ 				VOL_CAP_FMT_DIR_HARDLINKS |
+ #endif
+diff --git a/bsd/sweet_hfs/core/hfs_vnops.c b/bsd/sweet_hfs/core/hfs_vnops.c
+index cd5a56a..e69f1be 100644
+--- a/bsd/sweet_hfs/core/hfs_vnops.c
++++ b/bsd/sweet_hfs/core/hfs_vnops.c
+@@ -1274,6 +1274,16 @@ hfs_set_bsd_flags(struct hfsmount *hfsmp, struct cnode *cp,
+ {
+ 	u_int16_t *fdFlags;
+ 
++	/*
++	 * 2018: this kernel registers no decmpfs decompressor (AppleFSCompression is not here), so a file turned compressed can
++	 * never be read again ("tried to access a compressed file of unregistered type 12": Safari aborted at launch and
++	 * Settings froze on files iOS had compressed with LZFSE at run time, asteroids ast15). The flag is refused; writers keep
++	 * the plain file. The volume no longer claims VOL_CAP_FMT_DECMPFS_COMPRESSION either (hfs_vfsops.c).
++	 */
++	if ((new_bsd_flags & UF_COMPRESSED) && !(cp->c_bsdflags & UF_COMPRESSED)) {
++		return ENOTSUP;
++	}
++
+ 	if ((new_bsd_flags & UF_TRACKED) && !(cp->c_bsdflags & UF_TRACKED)) {
+ 		struct FndrExtendedDirInfo *fip = (struct FndrExtendedDirInfo *)((char *)&cp->c_attr.ca_finderinfo + 16);
+ 

@@ -1,0 +1,52 @@
+--- a/src/bgmtl.m	2026-10-28 07:53:42.333192790 +0530
++++ b/src/bgmtl.m	2026-10-28 07:53:42.308889734 +0530
+@@ -488,11 +488,32 @@
+ - (void *)contents;
+ @end
+ 
++// BGMTL_SKIP_COMPUTE: comma-separated compute function names whose dispatches are dropped ("all": every one). The A810
++// (asteroids) hung its GPU twice right after backboardd's first compute_average_luma/compute_sum_luma dispatches (ast9,
++// ast10, 2026-10-28; Mesa 26.2's a8xx compute is new): what reads their results (luma statistics) then sees stale values.
++static int
++bg_compute_skipped(const char *name)
++{
++   const char *list = getenv("BGMTL_SKIP_COMPUTE");
++   if (!list || !list[0] || !name) return 0;
++   if (!strcmp(list, "all")) return 1;
++   size_t n = strlen(name);
++   for (const char *p = list; *p; ) {
++      const char *e = strchr(p, ',');
++      size_t len = e ? (size_t)(e - p) : strlen(p);
++      if (len == n && !strncmp(p, name, n)) return 1;
++      if (!e) break;
++      p = e + 1;
++   }
++   return 0;
++}
++
+ @interface BGMTLComputePipeline : _MTLComputePipelineState {
+  @public
+    BGMTLDevice *_owner;
+    struct chl_compute_pipeline *_p;
+    struct chl_pipeline_info _info;
++   int _skip;     // its dispatches are dropped (bg_compute_skipped)
+ }
+ @end
+ 
+@@ -1177,6 +1198,8 @@
+    p->_owner = self;
+    p->_p = c;
+    p->_info = info;
++   p->_skip = bg_compute_skipped([[function name] UTF8String]);
++   if (p->_skip) BG_LOG("pipeline %s: its dispatches are SKIPPED (BGMTL_SKIP_COMPUTE)\n", [[function name] UTF8String]);
+    BG_LOG("pipeline %s: buffers %#x textures %#x samplers %#x\n", [[function name] UTF8String], info.buffers_used[0], info.textures_used[0],
+           info.samplers_used[0]);
+    return p;
+@@ -1856,6 +1879,7 @@
+ - (void)dispatchThreadgroups:(MTLSize)groups threadsPerThreadgroup:(MTLSize)size
+ {
+    if (!_pipeline || !_cb->_ccb) { BG_LOG("dispatch with no pipeline\n"); return; }
++   if (_pipeline->_skip) return;
+    unsigned g[3] = { (unsigned)groups.width, (unsigned)groups.height, (unsigned)groups.depth };
+    unsigned t[3] = { (unsigned)size.width, (unsigned)size.height, (unsigned)size.depth };
+    char why[512] = { 0 };

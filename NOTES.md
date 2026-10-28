@@ -180,6 +180,13 @@
     build-chlorophyll.sh); kernel 2012 (SMMU fault poll in the fence wait: FAR named as mapped / live / free / recently freed
     with its fence, FSR cleared; also in the hang report); bgl-launch TU_DEBUG default sysmem,flushall; boot images add
     sweetsurf_lossless=1 so a CPU-rendered fallback does not die on push_surface.
+  * ast10 (CI 40618237091 = 320af8b, images ios26-ast10-{60,30}hz with sweetsurf_lossless=1; TU_DEBUG=sysmem,flushall;
+    2026-10-28): user: same as before. Logs logs/ast10 + logs/ast10-var. No handler-race crash any more (one backboardd on
+    Chlorophyll). GPU hung again at fence 960, NO SMMU fault (FSR 0x400 only): CP past the IB at 0x25155000 (0x154 dwords),
+    rbbm 0xec0405. Again right after the first compute pipelines (compute_average_luma, compute_sum_luma), as in ast9.
+    flushall did not help. Next try (root only, same ast10 kernel): asteroids/chlorophyll-patches/0002 adds
+    BGMTL_SKIP_COMPUTE (dispatches of the named compute functions dropped); bgl-launch defaults it to
+    compute_average_luma,compute_sum_luma (bgmtl-bb.skipcompute overrides) and TU_DEBUG back to sysmem.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

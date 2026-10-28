@@ -30,8 +30,10 @@
  * 2026-10-28): a Metal launch first waits for the service (BB_GPU_WAIT s, or the number in bgmtl-bb.wait). Without it the inject
  * ran stock, its alive=0 switched Metal off at the next start and the rest of the boot had CoreAnimation's CPU renderer. A GPU that
  * never appears writes bgmtl-bb.off (the next starts do not wait again) and this start runs plain.
- * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem,flushall" (flushall since ast9: a
- * submission still hung after 2451 with sysmem alone; A810 support in Mesa 26.2 is new, a missing cache flush is the next suspect). The first Metal backboardd
+ * BGMTL_SKIP_COMPUTE (Chlorophyll drops those compute dispatches): the first line of bgmtl-bb.skipcompute (empty: none), default
+ * "compute_average_luma,compute_sum_luma": the GPU hung right after backboardd's first luma dispatches in ast9 and ast10, with
+ * sysmem and with sysmem,flushall (flushall did not help and is not the default any more).
+ * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem". The first Metal backboardd
  * (ast8-60, 2026-10-28) drew for a while, then a submission never came back (GPU lost); GMEM/binning on the A810 runs on
  * hand-set GMEM parameters, so sysmem rendering is the first suspect ruled out.
  */
@@ -230,7 +232,9 @@ static void clean_legibility_pools(void)
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
 #define BB_WAIT   "/private/var/tmp/bgmtl-bb.wait"
 #define BB_TUDEBUG "/private/var/tmp/bgmtl-bb.tudebug"
-#define BB_TUDEBUG_DEFAULT "sysmem,flushall"
+#define BB_TUDEBUG_DEFAULT "sysmem"
+#define BB_SKIPCOMPUTE "/private/var/tmp/bgmtl-bb.skipcompute"
+#define BB_SKIPCOMPUTE_DEFAULT "compute_average_luma,compute_sum_luma"
 #define BB_GPU_WAIT 90
 #define GPU_SERVICE "SweetAdreno630"   /* SWEET_GPU_SERVICE_NAME, xnu/gpu-abi/sweet_adreno_abi.h */
 
@@ -240,6 +244,19 @@ static void bb_off(const char *why)
 {
 	FILE *f = fopen(BB_OFF, "w");
 	if (f) { fprintf(f, "%s\n", why); fclose(f); }
+}
+
+/* the first line of PATH (an empty file: ""), else DEF */
+static void file_setting(const char *path, const char *def, char *out, size_t n)
+{
+	FILE *f = fopen(path, "r");
+	snprintf(out, n, "%s", def);
+	if (f) {
+		if (!fgets(out, (int)n, f))
+			out[0] = 0;
+		out[strcspn(out, "\r\n")] = 0;
+		fclose(f);
+	}
 }
 
 /* 1 once the kernel published the GPU; 0 after the wait (and bgmtl-bb.off: later starts of this boot do not wait again) */
@@ -323,16 +340,13 @@ int main(int argc, char **argv)
 		struct stat st;
 		setenv("DYLD_INSERT_LIBRARIES", BB_LIBDIR "/bgmtl-inject.dylib", 1);
 		setenv("BGMTL_BB", "1", 1);
-		char tud[128] = BB_TUDEBUG_DEFAULT;
-		FILE *tf = fopen(BB_TUDEBUG, "r");
-		if (tf) {
-			if (!fgets(tud, sizeof tud, tf))
-				tud[0] = 0;
-			tud[strcspn(tud, "\r\n")] = 0;
-			fclose(tf);
-		}
+		char tud[128], skip[256];
+		file_setting(BB_TUDEBUG, BB_TUDEBUG_DEFAULT, tud, sizeof tud);
+		file_setting(BB_SKIPCOMPUTE, BB_SKIPCOMPUTE_DEFAULT, skip, sizeof skip);
 		if (tud[0])
 			setenv("TU_DEBUG", tud, 1);
+		if (skip[0])
+			setenv("BGMTL_SKIP_COMPUTE", skip, 1);
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
 		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -340,8 +354,8 @@ int main(int argc, char **argv)
 			dup2(fd, 2);
 			close(fd);
 			fputs(g_wait_msg, stderr);
-			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll), TU_DEBUG=%s\n", BB_LIBDIR,
-			    tud[0] ? tud : "(none)");
+			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll), TU_DEBUG=%s, BGMTL_SKIP_COMPUTE=%s\n",
+			    BB_LIBDIR, tud[0] ? tud : "(none)", skip[0] ? skip : "(none)");
 		}
 		argv[0] = (char *)REAL_PATH;
 		execv(REAL_PATH, argv);

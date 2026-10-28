@@ -946,10 +946,12 @@ MERCURY_BIN = 'System/Library/ExtensionKit/Extensions/MercuryPosterExtension.app
 
 def bgmtl_arm(root):
     if os.environ.get('RENEGADE_BGMTL_ARM') != '0':          # ON by default (the user's decision: the image ships Metal Mercury); RENEGADE_BGMTL_ARM=0 leaves it inert
-        arm = os.path.join(root, 'private/var/tmp/bgmtl.arm')
-        os.makedirs(os.path.dirname(arm), exist_ok=True)
-        with open(arm, 'w') as f:
-            f.write('armed by renegade bgmtl (RENEGADE_BGMTL_ARM=0 to ship it inert)\n')
+        # /private/var/db/bgmtl survives iOS's dirs_cleaner (it empties /private/var/tmp at boot once the data-protection
+        # class reads back, kernel 2021: asteroids ast17 lost the switches); the copy in /private/var/tmp stays for older injects
+        for arm in (os.path.join(root, 'private/var/db/bgmtl/bgmtl.arm'), os.path.join(root, 'private/var/tmp/bgmtl.arm')):
+            os.makedirs(os.path.dirname(arm), exist_ok=True)
+            with open(arm, 'w') as f:
+                f.write('armed by renegade bgmtl (RENEGADE_BGMTL_ARM=0 to ship it inert)\n')
         print('bgmtl: /private/var/tmp/bgmtl.arm written: Mercury renders through BGMTLDevice at boot (dead-man and kill switch bgmtl.off apply)')
 
 
@@ -1352,7 +1354,9 @@ def chlorophyll(root, src):
             n += 1
     save(lpath, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') != '0':
-        write_file(os.path.join(root, 'private/var/tmp/bgmtl-bb.arm'), 'armed by renegade chlorophyll\n')
+        for arm in ('private/var/db/bgmtl/bgmtl-bb.arm', 'private/var/tmp/bgmtl-bb.arm'):   # db: survives dirs_cleaner
+            os.makedirs(os.path.dirname(os.path.join(root, arm)), exist_ok=True)
+            write_file(os.path.join(root, arm), 'armed by renegade chlorophyll\n')
     print('chlorophyll: %s installed, backboardd job -> %s (%d entr%s), %s' % (', '.join(CHLOROPHYLL_FILES), BGL_LAUNCH, n,
           'y' if n == 1 else 'ies', 'not armed' if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') == '0' else 'armed (bgmtl-bb.arm)'))
     return True

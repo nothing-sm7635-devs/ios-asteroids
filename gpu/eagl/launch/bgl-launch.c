@@ -228,15 +228,20 @@ static void clean_legibility_pools(void)
 		fprintf(stderr, "bgl-launch: removed %u stale legibility pool file%s\n", n, n == 1 ? "" : "s");
 }
 
-#define BB_ARM    "/private/var/tmp/bgmtl-bb.arm"
+/* Settings that must outlive a boot live in /private/var/db/bgmtl (iOS's dirs_cleaner boot task empties /private/var/tmp,
+ * /private/var/run and /private/var/mobile/tmp once the data-protection class reads back -- asteroids ast17 2026-10-28 lost the
+ * arm switch that way and backboardd ran on CA's OpenGL path). /private/var/tmp is still read for each of them (older roots,
+ * live tests); the per-boot state (bgmtl-bb.off, bgmtl-bb.state) stays in /private/var/tmp on purpose: a wipe at boot is right. */
+#define BB_CFGDIR "/private/var/db/bgmtl"
+#define BB_ARM    "bgmtl-bb.arm"
 #define BB_OFF    "/private/var/tmp/bgmtl-bb.off"
 #define BB_STATE  "/private/var/tmp/bgmtl-bb.state"
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
-#define BB_WAIT   "/private/var/tmp/bgmtl-bb.wait"
-#define BB_TUDEBUG "/private/var/tmp/bgmtl-bb.tudebug"
+#define BB_WAIT   "bgmtl-bb.wait"
+#define BB_TUDEBUG "bgmtl-bb.tudebug"
 #define BB_TUDEBUG_DEFAULT "sysmem,noubwc,nocb"
-#define BB_SKIPCOMPUTE "/private/var/tmp/bgmtl-bb.skipcompute"
-#define BB_TEXPOOL "/private/var/tmp/bgmtl-bb.texpool"
+#define BB_SKIPCOMPUTE "bgmtl-bb.skipcompute"
+#define BB_TEXPOOL "bgmtl-bb.texpool"
 #define BB_TEXPOOL_DEFAULT "0"
 #define BB_SKIPCOMPUTE_DEFAULT "compute_average_luma,compute_sum_luma"
 #define BB_GPU_WAIT 90
@@ -250,10 +255,22 @@ static void bb_off(const char *why)
 	if (f) { fprintf(f, "%s\n", why); fclose(f); }
 }
 
-/* the first line of PATH (an empty file: ""), else DEF */
-static void file_setting(const char *path, const char *def, char *out, size_t n)
+/* NAME under BB_CFGDIR if that exists, else under /private/var/tmp (the path may not exist either) */
+static const char *cfg_path(const char *name)
 {
-	FILE *f = fopen(path, "r");
+	static char path[256];
+	struct stat st;
+	snprintf(path, sizeof path, "%s/%s", BB_CFGDIR, name);
+	if (stat(path, &st) == 0)
+		return path;
+	snprintf(path, sizeof path, "/private/var/tmp/%s", name);
+	return path;
+}
+
+/* the first line of NAME (an empty file: ""), else DEF */
+static void file_setting(const char *name, const char *def, char *out, size_t n)
+{
+	FILE *f = fopen(cfg_path(name), "r");
 	snprintf(out, n, "%s", def);
 	if (f) {
 		if (!fgets(out, (int)n, f))
@@ -267,7 +284,7 @@ static void file_setting(const char *path, const char *def, char *out, size_t n)
 static int gpu_wait(void)
 {
 	int secs = BB_GPU_WAIT, ms = 0;
-	FILE *f = fopen(BB_WAIT, "r");
+	FILE *f = fopen(cfg_path(BB_WAIT), "r");
 	if (f) {
 		if (fscanf(f, "%d", &secs) != 1 || secs < 0)
 			secs = BB_GPU_WAIT;
@@ -313,7 +330,7 @@ static int metal_mode(void)
 		}
 		was[0] = 0;
 	}
-	if (stat(BB_ARM, &st) != 0 || stat(BB_OFF, &st) == 0)
+	if (stat(cfg_path(BB_ARM), &st) != 0 || stat(BB_OFF, &st) == 0)
 		return 0;
 	/* the runtime is libchlorophyll.dylib since Turnip (Chlorophyll turnip/build-metal.sh), libbgair.dylib on the Gallium build */
 	if (!readable(BB_LIBDIR, "bgmtl-inject.dylib") ||

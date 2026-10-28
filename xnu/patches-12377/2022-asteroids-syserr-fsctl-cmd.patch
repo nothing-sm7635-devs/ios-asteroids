@@ -1,0 +1,36 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 918ad4d..5cf5409 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -708,6 +708,8 @@ sweet_syserr_name(unsigned short code)
+ 	case 234: return "getxattr";
+ 	case 236: return "setxattr";
+ 	case 242: return "fsctl";
++	case 245: return "ffsctl";
++	case 462: return "clonefileat";
+ 	case 266: return "shm_open";
+ 	case 268: return "sem_open";
+ 	case 277: return "open_extended";
+@@ -856,7 +858,7 @@ sweet_syserr_trace(struct proc *p, unsigned short code, int error, const uint64_
+ 		return;
+ 	}
+ 
+-	char detail[112];
++	char detail[160];
+ 	detail[0] = '\0';
+ 	int pi = sweet_syserr_path_arg(code);
+ 	uint64_t key = sweet_syserr_hash(0xcbf29ce484222325ULL, name);
+@@ -926,6 +928,13 @@ sweet_syserr_trace(struct proc *p, unsigned short code, int error, const uint64_
+ 	} else if (code == 92) {
+ 		snprintf(detail, sizeof(detail), " cmd=%llu", arg[1]);
+ 		key = (key ^ (uint32_t)arg[1]) * 0x100000001b3ULL;
++	} else if (code == 242 || code == 245) {
++		/* fsctl(path, cmd, data, options) / ffsctl(fd, cmd, ...): the APFS-only commands HFS+ answers with ENOTTY
++		 * (containermanagerd, PosterBoard: which ones is what the emulation needs) */
++		size_t n = strlen(detail);
++		snprintf(detail + n, sizeof(detail) - n, " cmd=0x%llx group '%c' num %llu", arg[1], (int)((arg[1] >> 8) & 0xff),
++		    arg[1] & 0xff);
++		key = (key ^ (uint32_t)arg[1]) * 0x100000001b3ULL;
+ 	} else if (code == 381) {
+ 		char pol[24];
+ 		size_t done = 0;

@@ -1,0 +1,32 @@
+--- a/inject/bgmtl_inject.m
++++ b/inject/bgmtl_inject.m
+@@ -52,6 +52,10 @@
+ #define F_BB_OFF "/private/var/tmp/bgmtl-bb.off"
+ #define F_BB_ARM "/private/var/tmp/bgmtl-bb.arm"
+ #define F_BB_STATE "/private/var/tmp/bgmtl-bb.state"
++// The arm switches also live in /private/var/db/bgmtl: iOS's dirs_cleaner boot task empties /private/var/tmp once the
++// data-protection class reads back (asteroids ast17, kernel 2021), which disarmed everything. Either place arms.
++#define F_ARM_DB "/private/var/db/bgmtl/bgmtl.arm"
++#define F_BB_ARM_DB "/private/var/db/bgmtl/bgmtl-bb.arm"
+ 
+ // iconservicesagent: iOS 26 renders every icon variant (tinted, dark, clear) with Metal; without a device each one failed with
+ // IconRendering.TextureIOError 6 and was retried forever (169 % CPU, blank tinted icons).
+@@ -312,7 +316,8 @@
+    g_bb = 1;
+    if (exists(F_BB_OFF)) { ilog("backboardd: %s present, stock", F_BB_OFF); return; }
+    int crashtest = 0;
+-   FILE *a = fopen(F_BB_ARM, "r");
++   FILE *a = fopen(F_BB_ARM_DB, "r");
++   if (!a) a = fopen(F_BB_ARM, "r");
+    if (!a) { ilog("backboardd: not armed, stock"); return; }
+    char word[32] = "";
+    if (fscanf(a, "%31s", word) == 1 && !strcmp(word, "crashtest")) crashtest = 1;
+@@ -448,7 +453,7 @@
+       snprintf(g_state, sizeof(g_state), "%s.%s", F_STATE, [bid UTF8String]);
+       snprintf(g_off, sizeof(g_off), "%s.%s", F_OFF, [bid UTF8String]);
+       if (exists(F_OFF) || exists(g_off)) { ilog("%s: kill switch present, stock", [bid UTF8String]); return; }
+-      if (!exists(F_ARM)) { ilog("%s: not armed, stock", [bid UTF8String]); return; }
++      if (!exists(F_ARM) && !exists(F_ARM_DB)) { ilog("%s: not armed, stock", [bid UTF8String]); return; }
+       // gate 3: the dead-man
+       int unclean = 0, alive = 1;
+       char boot[64] = "";

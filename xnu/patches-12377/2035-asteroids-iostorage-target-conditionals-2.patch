@@ -1,0 +1,51 @@
+diff --git a/iokit/IOKit/storage/IOStorage.h b/iokit/IOKit/storage/IOStorage.h
+index 8df61b9..0057f77 100644
+--- a/iokit/IOKit/storage/IOStorage.h
++++ b/iokit/IOKit/storage/IOStorage.h
+@@ -30,6 +30,21 @@
+ #ifndef _IOSTORAGE_H
+ #define _IOSTORAGE_H
+ 
++/* SWEET: the kernel build has no <TargetConditionals.h> (-nostdlibinc); IOStorageFamily is the macOS build of the
++ * family (the KDK 26.5 apfs kext's ABI, IOBlockStorageDevice.h's TARGET_OS_OSX methods included), so the macOS answers */
++#if __has_include(<TargetConditionals.h>)
++#include <TargetConditionals.h>
++#endif
++#ifndef TARGET_OS_OSX
++#define TARGET_OS_OSX 1
++#endif
++#ifndef TARGET_OS_DRIVERKIT
++#define TARGET_OS_DRIVERKIT 0
++#endif
++#ifndef TARGET_OS_IPHONE
++#define TARGET_OS_IPHONE 0
++#endif
++
+ #include <sys/kernel_types.h>
+ #include <IOKit/IOTypes.h>
+ 
+diff --git a/iokit/IOKit/storage/IOStorageControllerCharacteristics.h b/iokit/IOKit/storage/IOStorageControllerCharacteristics.h
+index 6dc21b4..2100a0b 100644
+--- a/iokit/IOKit/storage/IOStorageControllerCharacteristics.h
++++ b/iokit/IOKit/storage/IOStorageControllerCharacteristics.h
+@@ -24,7 +24,20 @@
+ #ifndef _IOKIT_IO_STORAGE_CONTROLLER_CHARACTERISTICS_H_
+ #define _IOKIT_IO_STORAGE_CONTROLLER_CHARACTERISTICS_H_
+ 
++/* SWEET: the kernel build has no <TargetConditionals.h> (-nostdlibinc); IOStorageFamily is the macOS build of the
++ * family (the KDK 26.5 apfs kext's ABI, IOBlockStorageDevice.h's TARGET_OS_OSX methods included), so the macOS answers */
++#if __has_include(<TargetConditionals.h>)
+ #include <TargetConditionals.h>
++#endif
++#ifndef TARGET_OS_OSX
++#define TARGET_OS_OSX 1
++#endif
++#ifndef TARGET_OS_DRIVERKIT
++#define TARGET_OS_DRIVERKIT 0
++#endif
++#ifndef TARGET_OS_IPHONE
++#define TARGET_OS_IPHONE 0
++#endif
+ 
+ /*
+  *	Controller Characteristics - Characteristics defined for controllers.

@@ -1,0 +1,123 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 6d4b1fd..b722f95 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -381,6 +381,87 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 	}
+ }
+ 
++/*
++ * 2013: closed BOs stay mapped (pages and surface kept) until the GPU has completed QUARANTINE more submissions after the
++ * close (boot-arg sweetgpuquar=N, 0 = unmap at close as before). On the A810 a submission made AFTER a BO was closed still
++ * read its address (ast10b, 2026-10-28: SMMU translation fault in a range freed 13 frees earlier, then the GPU hung), so a late
++ * reference now reads the old contents instead of faulting. FIFO, oldest first; a full store gives back its oldest entry,
++ * as an unquarantined close would. Lock held for every call.
++ */
++#define QUARANTINE_MAX          512
++static struct {
++	uint64_t           iova, mapLen, vaLen;
++	IOMemoryDescriptor *md;
++	SweetSurface       *surface;
++	uint32_t           due;
++} gQuar[QUARANTINE_MAX];
++static unsigned gQuarHead, gQuarCount, gQuarSubmits = ~0u;
++static uint64_t gQuarBytes;
++
++static void
++quarantineGiveBack(void)
++{
++	unsigned i = gQuarHead;
++	if (gQuar[i].iova != IOVA_UNSET) {
++		sweet_gpu_vm_unmap(gQuar[i].iova, gQuar[i].mapLen);
++		sweet_gpu_iova_free(gQuar[i].iova, gQuar[i].vaLen);
++	}
++	gQuarBytes -= gQuar[i].mapLen;
++	OSSafeReleaseNULL(gQuar[i].md);
++	if (gQuar[i].surface != NULL) {
++		gQuar[i].surface->release();
++		gQuar[i].surface = NULL;
++	}
++	gQuarHead = (gQuarHead + 1) % QUARANTINE_MAX;
++	gQuarCount--;
++}
++
++/* Gives back what is due (all: everything the GPU is done with, for an allocation that found no address space). */
++static void
++quarantineDrain(bool all)
++{
++	if (!sweet_gpu_ready()) {
++		return;                 /* a lost GPU keeps everything, as releaseGem's leak path does */
++	}
++	while (gQuarCount != 0) {
++		uint32_t due = gQuar[gQuarHead].due;
++		if (!all && ((int32_t)(sweet_gpu_fence_last() - due) < 0 || !sweet_gpu_fence_done(due))) {
++			break;
++		}
++		quarantineGiveBack();
++	}
++}
++
++static bool
++quarantineTake(struct sweet_gem *g)
++{
++	if (gQuarSubmits == ~0u) {
++		uint32_t n = 64;
++		PE_parse_boot_argn("sweetgpuquar", &n, sizeof(n));
++		gQuarSubmits = n;
++		IOLog("SWEET GPU: closed BOs stay mapped until %u more submissions completed (sweetgpuquar)\n", n);
++	}
++	if (gQuarSubmits == 0 || g->iova == IOVA_UNSET) {
++		return false;
++	}
++	quarantineDrain(false);
++	if (gQuarCount == QUARANTINE_MAX) {
++		quarantineGiveBack();
++	}
++	unsigned i = (gQuarHead + gQuarCount) % QUARANTINE_MAX;
++	gQuar[i].iova = g->iova;
++	gQuar[i].mapLen = g->size + g->tail;
++	gQuar[i].vaLen = g->vaLen;
++	gQuar[i].md = g->md;
++	gQuar[i].surface = g->surface;
++	gQuar[i].due = sweet_gpu_fence_last() + gQuarSubmits;
++	gQuarBytes += gQuar[i].mapLen;
++	gQuarCount++;
++	g->md = NULL;                   /* both now belong to the quarantine */
++	g->surface = NULL;
++	return true;
++}
++
+ /*
+  * Give a BO back (lock held). If the GPU might still use it (a submission that did not
+  * complete), the memory and its GPU mapping are deliberately leaked: freeing pages the GPU
+@@ -403,7 +484,7 @@ SweetAdrenoUserClient::releaseGem(struct sweet_gem *g)
+ 		if (g->surface != NULL) {
+ 			g->surface->retain();
+ 		}
+-	} else if (g->iova != IOVA_UNSET) {
++	} else if (g->iova != IOVA_UNSET && !quarantineTake(g)) {
+ 		sweet_gpu_vm_unmap(g->iova, g->size + g->tail);
+ 		sweet_gpu_iova_free(g->iova, g->vaLen);
+ 	}
+@@ -501,8 +582,11 @@ SweetAdrenoUserClient::mapGem(struct sweet_gem *slot, uint32_t flags, uint32_t *
+ 		iova = setIova;
+ 		taken = size;
+ 	} else if (!sweet_gpu_iova_alloc(size + tail, &iova, &taken)) {
+-		IOLog("SWEET GPU: no GPU address space for %llu bytes\n", size);
+-		return kIOReturnNoSpace;
++		quarantineDrain(true);       /* the quarantine may hold the space: give back what the GPU is done with */
++		if (!sweet_gpu_iova_alloc(size + tail, &iova, &taken)) {
++			IOLog("SWEET GPU: no GPU address space for %llu bytes (quarantine %u BOs, %llu bytes)\n", size, gQuarCount, gQuarBytes);
++			return kIOReturnNoSpace;
++		}
+ 	}
+ 	bool ok = true;
+ 	uint64_t mapped = 0;
+@@ -796,6 +880,7 @@ SweetAdrenoUserClient::submit(struct sweet_msm_gem_submit *r)
+ 		fLastFence = fence;
+ 		r->fence = fence;
+ 		r->fence_fd = -1;
++		quarantineDrain(false);
+ 		ret = kIOReturnSuccess;
+ 	}
+ unlock:

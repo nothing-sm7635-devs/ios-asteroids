@@ -187,6 +187,15 @@
     flushall did not help. Next try (root only, same ast10 kernel): asteroids/chlorophyll-patches/0002 adds
     BGMTL_SKIP_COMPUTE (dispatches of the named compute functions dropped); bgl-launch defaults it to
     compute_average_luma,compute_sum_luma (bgmtl-bb.skipcompute overrides) and TU_DEBUG back to sysmem.
+  * ast10b (same kernel, root with the compute skip, 2026-10-28): still hung (fence 1161), but the 2012 fault check named it:
+    SMMU FAULT 1 FAR 0x43645280 read, in never-allocated free space; FAULT 3 FAR 0x2865f580 read, inside 0x2813e000+0x675000
+    freed 13 frees earlier at fence 659 while fences up to 679 ran: a submission made AFTER that BO was closed still read it
+    (use-after-free; the garbage address fits a stale descriptor). Checked and ruled out: Chlorophyll holds every bound
+    object until completion (cb_hold, cb_retire after vkWaitForFences); Turnip passes every device BO with each submit; the
+    kernel waits each BO's lastFence before unmapping; the a7xx fence framing (BV fence, BR waits, BR CACHE_CLEAN|IRQ) is
+    upstream's; shared IOSurface handles are refcounted by Turnip. Culprit not found yet.
+    Mitigation, kernel 2013: closed BOs are quarantined (still mapped, pages and surface kept) until 64 more submissions
+    complete (sweetgpuquar=N, 0 = old behaviour); an allocation that finds no address space drains it first.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

@@ -326,6 +326,16 @@
     `sweetposterset --descriptors PROVIDER` first (logged), a descriptor it does not offer is replaced by its first
     offered one, 5 tries for Mercury then 10 for Collections. Shell logic tested on the host with a stand-in tool
     (unknown ID replaced; Mercury failing -> Collections selected).
+  * ast16e (full root rebuild after the hfsplus corruption: renegade update's in-place rewrites of the fragmented 1.2 MiB
+    launchd.plist broke the extents overflow B-tree, Linux hfsplus answered ENOENT, fsck_hfs -fy segfaulted rebuilding
+    it; save() now writes a temp file and renames; 2026-10-28): same symptoms. sweetrun.log: PosterBoard answers -2218
+    (PBFPosterExtensionDataStoreErrorDomain, descriptorType=dynamic) ALREADY to fetchPosterDescriptorsForExtension, for
+    MercuryPoster AND CollectionsPoster: -2218 is not "unknown descriptor", PosterBoard cannot get descriptors from
+    any poster extension (the extensions launched once at boot, did not crash, were not relaunched for the request).
+    PosterBoard's store is SQLite (PBFPosterExtensionDataStoreSQLiteDatabase): a storage call HFS+ lacks is a
+    candidate. Ruled out: csops ERANGE (stock two-step length query). sweetsyserr was eaten by containermanagerd
+    again (854): new image ios26-ast16-diag2 traces PosterBoard, the poster extensions, sweetposterset, Safari,
+    Settings, chronod, WidgetRenderer only. First boot's poster step failed (rc=1) and reruns at the next boot.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

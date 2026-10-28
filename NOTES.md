@@ -227,6 +227,15 @@
     in the decoded registers. Found: MSM_PARAM_MACROTILE_MODE answered 0, Linux answers qcom_ubwc_macrotile_mode() =
     enc >= UBWC 3.1 = 1 for milos (UBWC 4.0): Turnip laid out UBWC surfaces for 4-channel macrotiles against a hardware
     set up as Linux does. Kernel 2016: MACROTILE_MODE 1. If UBWC still misbehaves: TU_DEBUG=sysmem,noubwc (root).
+  * ast14 (kernel 14 = 8d8b687: 2014+2015+2016, 60 Hz, sweetsurf_lossless=1; 2026-10-28): user: way smoother, recents work,
+    but very glitchy, flicker, black wallpaper, no widgets/control centre, hangs after heavy use. Logs logs/ast14(+var).
+    RECOVERY WORKS: 3 recoveries ("the GPU answers again", fences 1176, 4705, 4708 voided), 5000+ submissions. The glitches:
+    the A810 iova free list (512 entries, copied from the A630) overflowed: "iova free list full; ... lost" 2640 times,
+    then "no GPU address space" 2203 times (quarantine empty), Chlorophyll "texture refused: would not allocate" 88x
+    (even 16 KiB), VkResult -2 on a pipeline, the wallpaper-size surface 304 SURFACE_BO -> 0xe00002db (NoSpace), then a
+    QuartzCore abort. Kernel 2017: a page bitmap allocator (next-fit, 48 KiB for the window; frees can no longer be lost;
+    the submission line reports pages taken). Boot images drop sweetsurf_lossless=1 (it refused the wallpaper's '&BGA'
+    surfaces; only needed for the CPU renderer).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

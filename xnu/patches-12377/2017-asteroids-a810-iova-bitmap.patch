@@ -1,0 +1,283 @@
+diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
+index b3ca58c..9305bd0 100644
+--- a/bsd/dev/sweet_a810_msm.c
++++ b/bsd/dev/sweet_a810_msm.c
+@@ -4,7 +4,9 @@
+  * SweetAdreno.cpp calls the sweet_gpu_* functions of sweet_a630.c; on asteroids each of those forwards here
+  * (sweet_board_asteroids()), and this file answers them with the A810 that sweeta810=16 brought up (sweet_a810_api.h).
+  * Differences from the A630 backend that the user client does not see:
+- *   - GPU addresses are [SWEET_A810_VA_START, SWEET_A810_VA_END), first-fit like the A630's list.
++ *   - GPU addresses are [SWEET_A810_VA_START, SWEET_A810_VA_END), one bit per 4 KiB page, next-fit (2017: the A630's
++ *     512-entry free list overflowed on asteroids and dropped every free it could not merge, ast14: 2640 ranges lost
++ *     until no texture could be allocated).
+  *   - Page maps are collected into physically contiguous runs and entered at vm_flush (each sweet_a810_vm_map is one
+  *     TLB invalidate). A bitmap of mapped pages lets a map over a page that is still mapped replace it (the A630's
+  *     page-table write did) and lets an unmap skip pages that were never mapped.
+@@ -39,13 +41,10 @@ extern void sweet_log_sync(void);               /* sweet_ufs.c */
+ #define AM_UBWC_SWIZZLE 2u
+ #define AM_PAGE         0x1000ull
+ #define AM_GUARD        AM_PAGE                 /* one unmapped page after each allocation, as the A630's GVM_GUARD */
+-#define AM_MAXFREE      512
+ #define AM_PAGES        ((SWEET_A810_VA_END - SWEET_A810_VA_START) / AM_PAGE)
+ 
+-static struct {
+-	uint64_t start, size;
+-} am_free[AM_MAXFREE];
+-static unsigned am_nfree;
++static uint64_t *am_used;                       /* one bit per page of the window: taken from the allocator */
++static uint64_t am_hint, am_used_pages;         /* next-fit start (page index); pages taken */
+ static bool am_inited, am_lost;
+ static uint8_t *am_mapped;                      /* one bit per page of the window */
+ static uint32_t am_last;                        /* the newest fence handed out */
+@@ -92,12 +91,11 @@ am_init(void)
+ 	}
+ 	am_inited = true;
+ 	am_mapped = kalloc_data(AM_PAGES / 8, Z_WAITOK | Z_ZERO);
+-	if (am_mapped == NULL) {
++	am_used = kalloc_data(AM_PAGES / 8, Z_WAITOK | Z_ZERO);
++	if (am_mapped == NULL || am_used == NULL) {
++		am_mapped = NULL;
+ 		return false;
+ 	}
+-	am_free[0].start = SWEET_A810_VA_START;
+-	am_free[0].size = SWEET_A810_VA_END - SWEET_A810_VA_START;
+-	am_nfree = 1;
+ 	printf("SWEET GPU: A810 msm backend: GPU addresses %#llx-%#llx\n", SWEET_A810_VA_START, SWEET_A810_VA_END);
+ 	return true;
+ }
+@@ -120,31 +118,88 @@ sweet_a810_msm_unlock(void)
+ 	lck_mtx_unlock(&am_mtx);
+ }
+ 
+-/* ---- GPU addresses: the A630's first-fit list over the A810 window ---- */
+-bool
+-sweet_a810_msm_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
++/* ---- GPU addresses: a page bitmap over the A810 window ---- */
++static bool
++am_used_bit(uint64_t n)
+ {
+-	uint64_t need = size + AM_GUARD;
++	return (am_used[n / 64] >> (n % 64)) & 1;
++}
+ 
+-	if (!sweet_a810_msm_ready() || size == 0 || (size & (AM_PAGE - 1))) {
+-		return false;
++static void
++am_used_mark(uint64_t first, uint64_t pages, bool on)
++{
++	for (uint64_t n = first; n < first + pages; n++) {
++		uint64_t bit = 1ull << (n % 64);
++		if (on && !(am_used[n / 64] & bit)) {
++			am_used[n / 64] |= bit;
++			am_used_pages++;
++		} else if (!on && (am_used[n / 64] & bit)) {
++			am_used[n / 64] &= ~bit;
++			am_used_pages--;
++		}
+ 	}
+-	for (unsigned i = 0; i < am_nfree; i++) {
+-		if (am_free[i].size >= need) {
+-			*iova = am_free[i].start;
+-			*taken = need;
+-			am_free[i].start += need;
+-			am_free[i].size -= need;
+-			if (am_free[i].size == 0) {
+-				memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
+-				am_nfree--;
++}
++
++/* The first run of `pages` free pages in [from, to): whole free or taken words are stepped over at once. */
++static bool
++am_find(uint64_t from, uint64_t to, uint64_t pages, uint64_t *first)
++{
++	uint64_t run = 0, start = from;
++	for (uint64_t n = from; n < to;) {
++		if (n % 64 == 0 && n + 64 <= to) {
++			uint64_t w = am_used[n / 64];
++			if (w == ~0ull) {
++				run = 0;
++				n += 64;
++				continue;
++			}
++			if (w == 0) {
++				if (run == 0) {
++					start = n;
++				}
++				run += 64;
++				n += 64;
++				if (run >= pages) {
++					*first = start;
++					return true;
++				}
++				continue;
++			}
++		}
++		if (am_used_bit(n)) {
++			run = 0;
++		} else {
++			if (run == 0) {
++				start = n;
++			}
++			if (++run >= pages) {
++				*first = start;
++				return true;
+ 			}
+-			return true;
+ 		}
++		n++;
+ 	}
+ 	return false;
+ }
+ 
++bool
++sweet_a810_msm_iova_alloc(uint64_t size, uint64_t *iova, uint64_t *taken)
++{
++	uint64_t need = size + AM_GUARD, pages = need / AM_PAGE, first = 0;
++
++	if (!sweet_a810_msm_ready() || size == 0 || (size & (AM_PAGE - 1)) || pages > AM_PAGES) {
++		return false;
++	}
++	if (!am_find(am_hint, AM_PAGES, pages, &first) && !am_find(0, AM_PAGES, pages, &first)) {
++		return false;
++	}
++	am_used_mark(first, pages, true);
++	am_hint = first + pages < AM_PAGES ? first + pages : 0;
++	*iova = SWEET_A810_VA_START + first * AM_PAGE;
++	*taken = need;
++	return true;
++}
++
+ bool
+ sweet_a810_msm_iova_reserve(uint64_t iova, uint64_t size)
+ {
+@@ -152,71 +207,27 @@ sweet_a810_msm_iova_reserve(uint64_t iova, uint64_t size)
+ 	    iova + size > SWEET_A810_VA_END) {
+ 		return false;
+ 	}
+-	for (unsigned i = 0; i < am_nfree; i++) {
+-		uint64_t s = am_free[i].start, e = s + am_free[i].size;
+-		if (iova < s || iova + size > e) {
+-			continue;
++	uint64_t first = (iova - SWEET_A810_VA_START) / AM_PAGE, pages = size / AM_PAGE;
++	for (uint64_t n = first; n < first + pages; n++) {
++		if (am_used_bit(n)) {
++			return false;
+ 		}
+-		if (iova == s && iova + size == e) {
+-			memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
+-			am_nfree--;
+-		} else if (iova == s) {
+-			am_free[i].start += size;
+-			am_free[i].size -= size;
+-		} else if (iova + size == e) {
+-			am_free[i].size -= size;
+-		} else {
+-			if (am_nfree == AM_MAXFREE) {
+-				return false;
+-			}
+-			memmove(&am_free[i + 1], &am_free[i], (am_nfree - i) * sizeof(am_free[0]));
+-			am_nfree++;
+-			am_free[i].size = iova - s;
+-			am_free[i + 1].start = iova + size;
+-			am_free[i + 1].size = e - (iova + size);
+-		}
+-		return true;
+ 	}
+-	return false;
++	am_used_mark(first, pages, true);
++	return true;
+ }
+ 
+ void
+ sweet_a810_msm_iova_free(uint64_t iova, uint64_t size)
+ {
+-	unsigned i = 0;
+-
+-	if (!am_inited || am_mapped == NULL) {
++	if (!am_inited || am_mapped == NULL || iova < SWEET_A810_VA_START || iova + size > SWEET_A810_VA_END) {
+ 		return;
+ 	}
+ 	am_freed[am_freed_next % AM_FREED].iova = iova;
+ 	am_freed[am_freed_next % AM_FREED].size = size;
+ 	am_freed[am_freed_next % AM_FREED].fence = am_last;
+ 	am_freed_next++;
+-	while (i < am_nfree && am_free[i].start < iova) {
+-		i++;
+-	}
+-	if (i > 0 && am_free[i - 1].start + am_free[i - 1].size == iova) {
+-		am_free[i - 1].size += size;
+-		if (i < am_nfree && am_free[i - 1].start + am_free[i - 1].size == am_free[i].start) {
+-			am_free[i - 1].size += am_free[i].size;
+-			memmove(&am_free[i], &am_free[i + 1], (am_nfree - i - 1) * sizeof(am_free[0]));
+-			am_nfree--;
+-		}
+-		return;
+-	}
+-	if (i < am_nfree && iova + size == am_free[i].start) {
+-		am_free[i].start = iova;
+-		am_free[i].size += size;
+-		return;
+-	}
+-	if (am_nfree == AM_MAXFREE) {
+-		printf("SWEET GPU: A810 iova free list full; %#llx+%#llx lost\n", iova, size);
+-		return;
+-	}
+-	memmove(&am_free[i + 1], &am_free[i], (am_nfree - i) * sizeof(am_free[0]));
+-	am_nfree++;
+-	am_free[i].start = iova;
+-	am_free[i].size = size;
++	am_used_mark((iova - SWEET_A810_VA_START) / AM_PAGE, (size + AM_PAGE - 1) / AM_PAGE, false);
+ }
+ 
+ /* ---- the GPU page table ---- */
+@@ -337,7 +348,8 @@ sweet_a810_msm_submit(const uint64_t *ib_iova, const uint32_t *ib_dwords, unsign
+ 	}
+ 	am_last = seq;
+ 	if (++am_submits == 1 || (am_submits & 1023) == 0) {
+-		printf("SWEET GPU: A810 %u submissions, fence %u, %u maps\n", am_submits, seq, am_maps);
++		printf("SWEET GPU: A810 %u submissions, fence %u, %u maps, %llu of %llu GPU pages taken\n", am_submits, seq, am_maps,
++		    am_used_pages, (uint64_t)AM_PAGES);
+ 	}
+ 	return seq;
+ }
+@@ -396,11 +408,8 @@ sweet_a810_msm_fault_check(void)
+ 	const char *what = "outside the GPU address window";
+ 	if (far >= SWEET_A810_VA_START && far < SWEET_A810_VA_END) {
+ 		what = am_bit(page) ? "MAPPED (a permission or walk fault)" : "inside a live allocation but not mapped (its guard page?)";
+-		for (unsigned i = 0; i < am_nfree; i++) {
+-			if (far >= am_free[i].start && far < am_free[i].start + am_free[i].size) {
+-				what = "in FREE address space";
+-				break;
+-			}
++		if (!am_used_bit((page - SWEET_A810_VA_START) / AM_PAGE)) {
++			what = "in FREE address space";
+ 		}
+ 	}
+ 	printf("SWEET GPU: A810 SMMU FAULT %u: FSR %#x FAR %#llx FSYNR0 %#x (%s, %s): %s; newest fence %u, observed done %d\n",
+@@ -417,15 +426,19 @@ sweet_a810_msm_fault_check(void)
+ 	}
+ 	if (!shown) {
+ 		uint64_t lo = 0, hi = ~0ull;
+-		for (unsigned i = 0; i < am_nfree; i++) {
+-			uint64_t e = am_free[i].start + am_free[i].size;
+-			if (am_free[i].start <= far && far < e) {
+-				lo = am_free[i].start;
+-				hi = e;
++		if (far >= SWEET_A810_VA_START && far < SWEET_A810_VA_END && !am_used_bit((page - SWEET_A810_VA_START) / AM_PAGE)) {
++			uint64_t n = (page - SWEET_A810_VA_START) / AM_PAGE, a = n, b = n;
++			while (a > 0 && !am_used_bit(a - 1)) {
++				a--;
++			}
++			while (b + 1 < AM_PAGES && !am_used_bit(b + 1)) {
++				b++;
+ 			}
++			lo = SWEET_A810_VA_START + a * AM_PAGE;
++			hi = SWEET_A810_VA_START + (b + 1) * AM_PAGE;
+ 		}
+-		printf("SWEET GPU: A810 SMMU FAULT %u: not among the last %u frees; free range around it %#llx-%#llx, %u free ranges\n",
+-		    am_faults, AM_FREED, lo, hi, am_nfree);
++		printf("SWEET GPU: A810 SMMU FAULT %u: not among the last %u frees; free range around it %#llx-%#llx, %llu of %llu pages taken\n",
++		    am_faults, AM_FREED, lo, hi, am_used_pages, (uint64_t)AM_PAGES);
+ 	}
+ 	sweet_log_sync();
+ 	return false;

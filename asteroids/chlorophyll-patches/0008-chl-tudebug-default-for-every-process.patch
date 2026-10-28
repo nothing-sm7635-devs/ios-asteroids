@@ -1,0 +1,36 @@
+--- a/air/chl_vk.c
++++ b/air/chl_vk.c
+@@ -668,17 +668,27 @@
+ 
+    /* /private/var/tmp/chl.tudebug: Turnip's TU_DEBUG for every chl process (system daemons get no environment of ours),
+     * e.g. "sysmem" to render without GMEM tiles. Read once, before Turnip reads its debug flags. */
++   /* Bergamota: without a file every process gets the flags backboardd runs with (bgl-launch's default): on the A810 UBWC
++    * and GMEM rendering come out with wrong colours, and the poster extensions (Mercury) rendered through them while the
++    * compositor did not (asteroids ast18: the Mercury wallpaper in wrong colours). /private/var/db/bgmtl/chl.tudebug is read
++    * first (iOS's dirs_cleaner empties /private/var/tmp at boot); an empty file means no flags. */
+    if (!getenv("TU_DEBUG")) {
+-      FILE *f = fopen("/private/var/tmp/chl.tudebug", "r");
+-      if (f) {
++      const char *paths[2] = { "/private/var/db/bgmtl/chl.tudebug", "/private/var/tmp/chl.tudebug" };
++      int from_file = 0;
++      for (int i = 0; i < 2 && !from_file; i++) {
++         FILE *f = fopen(paths[i], "r");
++         if (!f)
++            continue;
+          char flags[128] = "";
+-         if (fgets(flags, sizeof(flags), f)) {
++         if (fgets(flags, sizeof(flags), f))
+             flags[strcspn(flags, "\r\n")] = 0;
+-            if (flags[0])
+-               setenv("TU_DEBUG", flags, 1);
+-         }
++         if (flags[0])
++            setenv("TU_DEBUG", flags, 1);
++         from_file = 1;
+          fclose(f);
+       }
++      if (!from_file)
++         setenv("TU_DEBUG", "sysmem,noubwc,nocb,nolrz", 1);
+    }
+ 
+    d->vk.vkCreateInstance = (PFN_vkCreateInstance)vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance");

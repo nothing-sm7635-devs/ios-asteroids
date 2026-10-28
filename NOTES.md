@@ -376,6 +376,18 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **APFS STEP 1 WORKS ON THE PHONE (ast19 boot 2, sweetiomedia=1, logs/ast19): IOStorageFamily in the kernel publishes
+  IOBlockStorageDriver -> IOMedia disk0 (239808 MiB, GUID_partition_scheme) -> IOGUIDPartitionScheme -> IOMedia disk0s1..s13
+  with IOMediaBSDClient on each; disk0s13 = userdata 230237 MiB (content 1B81E7E6-...); nub reads 3, errors 0; 30 clients.**
+  Next for APFS: corecrypto KPIs from source + the prelinked apfs/AppleImage4/CoreTrust set (tools/apfs emitter), then
+  rd=disk0s13 over APFS instead of rd=ufsroot0 (needs an APFS-formatted userdata: a new root image).
+* ast19 boot (same bugs): Safari's exception text (heap scan): `-[NSURL initFileURLWithPath:isDirectory:]: nil string
+  parameter`, thrown from MobileSafariUI+0xbe88 at app launch (UIApplicationMain -> delegate); Safari's own syscalls show no
+  failure, so the nil path comes from a daemon answer (containermanagerd, not traced this boot). Control Center still grey
+  with the 0007 decode in place (no refusals any more): the snapshots are drawn INTO by the render server and were never
+  written back -> Chlorophyll 0009 YCbCr write-back (RGB->NV12). GPU: 6 recoveries at level 8 (3 at level 6): back to the
+  default level next boot. Mercury (the iOS 26 default poster is a Mercury one) still wrong colours with the Turnip flags.
+
 * **Wallpaper colours (user, ast18): the iOS 26 default poster appeared first (PosterBoard's own choice, rendered right), then
   the first-boot job replaced it with Mercury fluidity.two (iOS 18-era fallback), which Chlorophyll renders in wrong colours.**
   Fix: `sweetposterset --if-none` (keeps whatever PosterBoard selected; sweetrun.sh poster() uses it), built on Linux with the

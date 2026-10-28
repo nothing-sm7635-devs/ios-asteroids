@@ -1,0 +1,114 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index e8d21b0..83f6f09 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -110,6 +110,7 @@
+ /* bsd/kern/sweet_amfi.c: boot-arg sweetsyserr */
+ void sweet_exec_env_trace(const char *name, int pid, const char *strings, const char *end);
+ void sweet_exec_delay(const char *leaf);
++void sweet_exec_kill_timer(const char *leaf);
+ #endif
+ #include <sys/reason.h>
+ #if SYSV_SHM
+@@ -2076,6 +2077,7 @@ grade:
+ 		sweet_exec_env_trace(leaf != NULL ? leaf + 1 : imgp->ip_startargv, proc_getpid(current_proc()),
+ 		    imgp->ip_endargv, imgp->ip_endenvv);
+ 		sweet_exec_delay(leaf != NULL ? leaf + 1 : imgp->ip_startargv);
++		sweet_exec_kill_timer(leaf != NULL ? leaf + 1 : imgp->ip_startargv);
+ 	}
+ #endif
+ 
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index c108ee8..f18d3c1 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -38,6 +38,8 @@
+ #include <machine/atomic.h>
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
++#include <kern/thread_call.h>
++#include <sys/signalvar.h>
+ #include <security/mac_policy.h>
+ #include <IOKit/IOBSD.h>
+ 
+@@ -1008,6 +1010,80 @@ sweet_syserr_trace(struct proc *p, unsigned short code, int error, const uint64_
+  */
+ void sweet_exec_delay(const char *leaf);
+ 
++/*
++ * Bergamota 2039: sweetkill=NAME:SECONDS[,NAME:SECONDS]: SECONDS after NAME's first exec of this boot, if it is still
++ * running, SIGABRT it, so the crash report (CRASH ... pc/bt of the thread that takes the signal, the sweetscan heap scan)
++ * shows where it hangs: a frozen Settings has no failing syscall to trace (asteroids ast19). One shot per name.
++ */
++static char sweet_kill_names[8][32];
++
++static void
++sweet_exec_kill_fire(thread_call_param_t p0, thread_call_param_t p1)
++{
++	int pid = (int)(uintptr_t)p0;
++	const char *want = (const char *)p1;
++	char name[32];
++	proc_t p = proc_find(pid);
++	if (p == NULL) {
++		printf("SWEET KILL: %s[%d] exited before its deadline\n", want, pid);
++		return;
++	}
++	name[0] = '\0';
++	proc_name(pid, name, sizeof(name));
++	if (strcmp(name, want) == 0) {
++		printf("SWEET KILL: %s[%d] still running at its deadline: SIGABRT for the crash report\n", name, pid);
++		psignal(p, SIGABRT);
++	}
++	proc_rele(p);
++}
++
++void
++sweet_exec_kill_timer(const char *leaf)
++{
++	static char spec[256];
++	static int parsed;
++	static uint32_t done_mask;
++	if (!parsed) {
++		if (!PE_parse_boot_argn("sweetkill", spec, sizeof(spec))) {
++			spec[0] = '\0';
++		}
++		parsed = 1;
++	}
++	if (spec[0] == '\0' || leaf == NULL) {
++		return;
++	}
++	size_t n = strlen(leaf);
++	int idx = 0;
++	for (const char *t = spec; *t; idx++) {
++		const char *end = strchr(t, ',');
++		size_t tl = end ? (size_t)(end - t) : strlen(t);
++		const char *colon = memchr(t, ':', tl);
++		if (colon != NULL && (size_t)(colon - t) == n && strncmp(t, leaf, n) == 0 && idx < 8 && !(done_mask & (1U << idx))) {
++			uint32_t secs = 0;
++			uint64_t deadline = 0;
++			for (const char *d = colon + 1; d < t + tl && *d >= '0' && *d <= '9'; d++) {
++				secs = secs * 10 + (uint32_t)(*d - '0');
++			}
++			if (secs == 0 || secs > 600) {
++				secs = 45;
++			}
++			done_mask |= 1U << idx;
++			strlcpy(sweet_kill_names[idx], leaf, sizeof(sweet_kill_names[idx]));
++			thread_call_t tc = thread_call_allocate(sweet_exec_kill_fire, (thread_call_param_t)(uintptr_t)proc_selfpid());
++			if (tc != NULL) {
++				clock_interval_to_deadline(secs, NSEC_PER_SEC, &deadline);
++				thread_call_enter1_delayed(tc, (thread_call_param_t)sweet_kill_names[idx], deadline);
++				printf("SWEET KILL: %s[%d]: SIGABRT in %u s unless it exits\n", leaf, proc_selfpid(), secs);
++			}
++			return;
++		}
++		if (!end) {
++			break;
++		}
++		t = end + 1;
++	}
++}
++
+ void
+ sweet_exec_delay(const char *leaf)
+ {

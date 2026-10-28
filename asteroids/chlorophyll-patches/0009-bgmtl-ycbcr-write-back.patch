@@ -1,0 +1,79 @@
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -605,6 +605,7 @@
+ - (void)bgLinearPending:(int)delta;
+ - (void)bgLinearWriteBack;
+ - (BOOL)bgXR10WriteBack;
++- (BOOL)bgYCbCrWriteBack;
+ @end
+ 
+ @interface BGMTLSampler : _MTLSamplerState {
+@@ -1762,7 +1763,7 @@
+       NSMutableSet *surfaces = nil, *xr = nil;
+       for (BGMTLTexture *t in _written) {
+          BGMTLTexture *root = [t bgRoot];
+-         if (root->_xr2p) { if (!xr) xr = [NSMutableSet set]; [xr addObject:root]; continue; }
++         if (root->_xr2p || root->_yuv2p) { if (!xr) xr = [NSMutableSet set]; [xr addObject:root]; continue; }
+          chl_texture_flush_surface([t chlTexture]);
+          if ([t iosurface]) { if (!surfaces) surfaces = [NSMutableSet set]; [surfaces addObject:(id)[t iosurface]]; }
+       }
+@@ -2335,9 +2336,59 @@
+ 
+ // Chlorophyll: the texture's pixels back into its two-plane RGB10A8_2P_XR10 surface (the encoding chlTextureFor: decodes: XR10
+ // 384 + 2c per 8-bit channel, exact both ways; alpha into plane 1), after a command buffer drew into it.
++// Bergamota: the same for a two-plane YCbCr surface (asteroids ast18/19: SpringBoard's Control Center and app-switcher
++// backdrops are 420f snapshots the render server draws INTO; decoded only, the surface kept its initial bytes = grey boxes).
++// BT.709 full/video range per the surface's format, luma per texel, one Cb/Cr pair per 2x2 (top-left sample).
++- (BOOL)bgYCbCrWriteBack
++{
++   if (!_yuv2p || !_tex || !_surface) return NO;
++   IOSurfaceRef sf = (IOSurfaceRef)_surface;
++   unsigned w = MIN(_desc.width, (unsigned)IOSurfaceGetWidthOfPlane(sf, 0)), h = MIN(_desc.height, (unsigned)IOSurfaceGetHeightOfPlane(sf, 0));
++   unsigned cw = (unsigned)IOSurfaceGetWidthOfPlane(sf, 1), chh = (unsigned)IOSurfaceGetHeightOfPlane(sf, 1);
++   uint8_t *px = (w && h && cw && chh) ? malloc((size_t)w * h * 4) : NULL;
++   if (!px) return YES;
++   char why[256] = { 0 };
++   const unsigned o[3] = { 0, 0, 0 }, sz[3] = { w, h, 1 };
++   if (chl_texture_get(_tex, 0, 0, o, sz, px, w * 4, 0, why, sizeof(why)) != 0) { BG_LOG("YCbCr write-back: %s\n", why); free(px); return YES; }
++   OSType pf = IOSurfaceGetPixelFormat(sf);
++   int wide = (pf == 0x78343230 /* x420 */ || pf == 0x78663230 /* xf20 */);
++   int full = (pf == 0x34323066 /* 420f */ || pf == 0x78663230 /* xf20 */);
++   if (IOSurfaceLock(sf, 0, NULL) == 0) {
++      uint8_t *p0 = IOSurfaceGetBaseAddressOfPlane(sf, 0), *p1 = IOSurfaceGetBaseAddressOfPlane(sf, 1);
++      size_t r0 = IOSurfaceGetBytesPerRowOfPlane(sf, 0), r1 = IOSurfaceGetBytesPerRowOfPlane(sf, 1);
++#define BG_CL(v) ((v) < 0 ? 0 : (v) > 255 ? 255 : (v))
++      for (unsigned y = 0; p0 && p1 && y < h; y++) {
++         const uint8_t *s = px + (size_t)y * w * 4;
++         uint8_t *d0 = p0 + (size_t)y * r0;
++         uint8_t *d1 = (y / 2 < chh && (y & 1) == 0) ? p1 + (size_t)(y / 2) * r1 : NULL;
++         for (unsigned x = 0; x < w; x++) {
++            int b = s[4 * x], g = s[4 * x + 1], r = s[4 * x + 2];
++            // BT.709, 8.8 fixed point: Y' = 0.2126 R + 0.7152 G + 0.0722 B; Cb = (B - Y') / 1.8556; Cr = (R - Y') / 1.5748
++            int yy = (54 * r + 183 * g + 19 * b) >> 8;
++            int Y = full ? yy : 16 + ((yy * 219) >> 8);
++            if (wide) ((uint16_t *)d0)[x] = (uint16_t)(BG_CL(Y) << 8); else d0[x] = (uint8_t)BG_CL(Y);
++            if (d1 && (x & 1) == 0 && x / 2 < cw) {
++               int cb = ((b - yy) * 138) >> 8, cr = ((r - yy) * 163) >> 8;
++               if (!full) { cb = (cb * 224) >> 8; cr = (cr * 224) >> 8; }
++               int CB = BG_CL(128 + cb), CR = BG_CL(128 + cr);
++               if (wide) { ((uint16_t *)d1)[2 * (x / 2)] = (uint16_t)(CB << 8); ((uint16_t *)d1)[2 * (x / 2) + 1] = (uint16_t)(CR << 8); }
++               else { d1[2 * (x / 2)] = (uint8_t)CB; d1[2 * (x / 2) + 1] = (uint8_t)CR; }
++            }
++         }
++      }
++#undef BG_CL
++      IOSurfaceUnlock(sf, 0, NULL);
++      _surfSeed = IOSurfaceGetSeed(sf);   // what the surface holds now IS the texture
++      _surfFresh = YES;
++   }
++   free(px);
++   return YES;
++}
++
+ - (BOOL)bgXR10WriteBack
+ {
+    if (_parent) return [(BGMTLTexture *)_parent bgXR10WriteBack];
++   if (_yuv2p) return [self bgYCbCrWriteBack];
+    if (!_xr2p || !_tex || !_surface) return NO;
+    IOSurfaceRef sf = (IOSurfaceRef)_surface;
+    unsigned w = MIN(_desc.width, (unsigned)IOSurfaceGetWidthOfPlane(sf, 0)), h = MIN(_desc.height, (unsigned)IOSurfaceGetHeightOfPlane(sf, 0));

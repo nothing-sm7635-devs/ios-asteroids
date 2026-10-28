@@ -1,0 +1,63 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 83f6f09..1e3ba52 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -6945,6 +6945,58 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++	/*
++	 * Bergamota 2040 (from UniXNU-sheng's native-exec-env, BSD-2-Clause-Patent): sweetexecenv=<name>:<VAR=value>[,<VAR=value>...]
++	 * [;<name>:...]: environment strings appended to the exec of the executable whose last path component is <name>. A
++	 * bring-up switch for a launchd job without rebuilding the root: OS_ACTIVITY_DT_MODE=1,ACTIVITY_LOG_STDERR=1 puts a
++	 * daemon's os_log on its stderr (the console log), CA_* debug values for backboardd, and so on.
++	 */
++	{
++		static char exec_env[320];
++		static int exec_env_state = -1;
++		if (exec_env_state < 0) {
++			exec_env_state = PE_parse_boot_argn("sweetexecenv", exec_env, sizeof(exec_env)) ? 1 : 0;
++		}
++		const char *path = imgp->ip_strings + strlen(EXECUTABLE_KEY);
++		const char *base = strrchr(path, '/');
++		base = base != NULL ? base + 1 : path;
++		for (const char *group = exec_env_state ? exec_env : NULL; group != NULL && *group != '\0';) {
++			const char *end = strchr(group, ';');
++			if (end == NULL) {
++				end = group + strlen(group);
++			}
++			const char *colon = strchr(group, ':');
++			if (colon != NULL && colon < end && (size_t)(colon - group) == strlen(base) &&
++			    strncmp(group, base, (size_t)(colon - group)) == 0) {
++				char one[128];
++				for (const char *c = colon + 1; c < end;) {
++					const char *e = c;
++					while (e < end && *e != ',') {
++						e++;
++					}
++					size_t n = (size_t)(e - c);
++					if (n != 0 && n < sizeof(one)) {
++						memcpy(one, c, n);
++						one[n] = '\0';
++						error = exec_add_user_string(imgp, CAST_USER_ADDR_T(one), UIO_SYSSPACE, TRUE);
++						if (error) {
++							goto bad;
++						}
++						if (imgp->ip_argspace < new_ptr_size) {
++							error = E2BIG;
++							goto bad;
++						}
++						imgp->ip_argspace -= new_ptr_size;
++						imgp->ip_envc++;
++						printf("SWEET EXEC: env %s += %s\n", base, one);
++					}
++					c = e < end ? e + 1 : e;
++				}
++			}
++			group = *end != '\0' ? end + 1 : end;
++		}
++	}
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;

@@ -1357,6 +1357,11 @@ def chlorophyll(root, src):
         for arm in ('private/var/db/bgmtl/bgmtl-bb.arm', 'private/var/tmp/bgmtl-bb.arm'):   # db: survives dirs_cleaner
             os.makedirs(os.path.dirname(os.path.join(root, arm)), exist_ok=True)
             write_file(os.path.join(root, arm), 'armed by renegade chlorophyll\n')
+        # compute dispatches on again (an empty bgmtl-bb.skipcompute = no BGMTL_SKIP_COMPUTE): the luma statistics the
+        # skipped compute_*_luma kernels produce decide the home-indicator colour (the "glitched gesture pill", ast19); the
+        # ast9/ast10 hangs blamed on them predate the iova/quarantine/WC fixes. RENEGADE_CHLOROPHYLL_SKIPCOMPUTE=1 keeps the skip.
+        if os.environ.get('RENEGADE_CHLOROPHYLL_SKIPCOMPUTE') != '1':
+            write_file(os.path.join(root, 'private/var/db/bgmtl/bgmtl-bb.skipcompute'), '')
     print('chlorophyll: %s installed, backboardd job -> %s (%d entr%s), %s' % (', '.join(CHLOROPHYLL_FILES), BGL_LAUNCH, n,
           'y' if n == 1 else 'ies', 'not armed' if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') == '0' else 'armed (bgmtl-bb.arm)'))
     return True

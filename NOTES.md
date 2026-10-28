@@ -376,6 +376,17 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **Full ast19 log review (2026-10-28 23:50Z) -> fixes:** (1) home-indicator ("gesture pill") colour = the luma statistics of
+  compute_average_luma/compute_sum_luma, which BGMTL_SKIP_COMPUTE has dropped since ast9 (stale values): the root now ships an
+  empty /private/var/db/bgmtl/bgmtl-bb.skipcompute (no skip; RENEGADE_CHLOROPHYLL_SKIPCOMPUTE=1 to keep it) -- watch the
+  RECOVERY count. (2) kernel 2040 `sweetexecenv=NAME:VAR=v[,VAR=v][;NAME:...]` (sheng's native-exec-env): with
+  OS_ACTIVITY_DT_MODE=1,ACTIVITY_LOG_STDERR=1 a daemon's os_log lands on its stderr = our console log (|name| lines): the way
+  to read chronod/pkd/MobileSafari reasons (no widget extension was ever exec'd in ast19; Safari's nil comes from
+  -[NSFileManager safari_mobileSafariContainerDirectoryURL]). (3) kernel 2039 sweetkill for the Settings freeze. (4) GPU:
+  back to the default level (6 recoveries at level 8 vs 3). Benign, reviewed: VMPROT refusals (guard pages, req read on
+  prot 0), launchd's jetsam watermark EINVAL, address_space_debugged_state NULL, trust-cache lines, 'SMP' thread samples
+  (exception.c sampler). pkd's syscalls show no refused plug-in.
+
 * **APFS STEP 1 WORKS ON THE PHONE (ast19 boot 2, sweetiomedia=1, logs/ast19): IOStorageFamily in the kernel publishes
   IOBlockStorageDriver -> IOMedia disk0 (239808 MiB, GUID_partition_scheme) -> IOGUIDPartitionScheme -> IOMedia disk0s1..s13
   with IOMediaBSDClient on each; disk0s13 = userdata 230237 MiB (content 1B81E7E6-...); nub reads 3, errors 0; 30 clients.**

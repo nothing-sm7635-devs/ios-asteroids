@@ -92,10 +92,23 @@ def load(path):
 
 
 def save(path, data, uid, gid, mode, fmt=plistlib.FMT_BINARY):
-    with open(path, 'wb') as f:
-        plistlib.dump(data, f, fmt=fmt)
-    os.chown(path, uid, gid)
-    os.chmod(path, mode)
+    # Written next to the target and renamed over it: a write that fails part way (Linux hfsplus answered ENOENT while
+    # rewriting the 270 KiB launchd.plist, 2026-10-28) leaves the old file whole instead of a truncated one.
+    tmp = path + '.renegade-new'
+    try:
+        with open(tmp, 'wb') as f:
+            plistlib.dump(data, f, fmt=fmt)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chown(tmp, uid, gid)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def merge_pref(root, name, values):

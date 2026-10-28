@@ -292,6 +292,15 @@
     backboardd: root_tweaks18.bgmtl (the wallpaper extension MercuryPoster gets the inject, bgmtl.arm, first boot then picks
     the Metal poster) looked for the Gallium runtime libbgair.dylib and skipped on every Turnip root -> it takes
     RENEGADE_CHLOROPHYLL and libchlorophyll.dylib. Widgets (WidgetRenderer) are not in the inject's allow list yet.
+  * Safari, root cause traced (ast16b sweetscan + dsctools): '*** -[NSURL initFileURLWithPath:isDirectory:]: nil string
+    parameter' from MobileSafariUI+0xbe88 at launch: _SFSafariIconImageCacheDirectoryPath -> _SFSafariContainerPath ->
+    [[NSFileManager defaultManager] safari_mobileSafariContainerDirectoryURL].path == nil: Safari's DATA CONTAINER lookup
+    failed. containermanagerd: fsctl ENOTTY once on every new container root (app data, daemon, app/system groups; an APFS
+    command HFS+ lacks), mkdir EEXIST, unlink EPERM on Dead/temp.*; containers are created (sandbox extensions issued).
+    Widgets: chronod and WidgetRenderer start but NO widget extension is ever launched (other extensions are). Next boot:
+    ios26-ast16-diag (kernel 16; sweetsyserr for MobileSafari, Preferences, chronod, WidgetRenderer, SpringBoard,
+    PosterBoard, the poster extensions, containermanager[d]; sweetscan as before); then tools/sweet-hfs-pull.py
+    --containers (new: every container with its MCMMetadataIdentifier) to see whether com.apple.mobilesafari has one.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

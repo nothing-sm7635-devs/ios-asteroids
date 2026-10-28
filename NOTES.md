@@ -376,6 +376,29 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **APFS gap audit (2026-10-28, static only, tools/apfs/; supersedes the 'NOT viable' verdict below for the KDK route).**
+  UniXNU-zeta's gates (copied with attribution, small Bergamota changes) run against OUR ast17 kernel and the kexts zeta
+  pinned: KDK 26.5.2 25F84 (apfs 2811.121.1, slice sha d82b3ebe..., AMFI 36a4f3e2..., zlib dba9d809... = zeta's pins). NOTE
+  dxb's KDK for MACOS_VERSION 26.5 is 25F71, whose apfs is 2811.120.14 (not zeta's). Files (git-ignored):
+  research/ios26/kdk/{kdk-25F84/root-KDK, thin-25F84, dl84 (dmg), kdk-25F71 (Extensions only), reports-ast17};
+  research/ios26/apfs-src/IOStorageFamily (337.100.1, 7edb88f). Re-run: `tools/apfs/run-audit.sh KERNEL OUTDIR`.
+  Measured: our kernel is a macOS-target (SDKROOT=macosx) arm64 build, so it already has the macOS IOKit padding:
+  OSObject/IOService identical to the KDK kernel; all 19 paired kernel classes (apfs+AMFI+zlib) and all 37 for the whole
+  KDK closure identical, 0 padding-only, 0 beyond-padding, 35/35 instance sizes equal => native-kdk-iokit-abi.patch NOT
+  needed. Imports: apfs 1278 imports/6550 fixups, 1093 bound, 185 names missing. Closure (zeta replacements =
+  IOStorageFamily + corecrypto from source): apfs 181 missing (IOStorageFamily 75 API + 73 reserved slots, crypto 32 +
+  _CCRSA_PKCS1_FAULT_CANARY), apfs+AMFI+zlib 189 (crypto 40). With the KDK IOStorageFamily/corecrypto BINARIES instead:
+  0 missing, 7 ambiguous (_cc_clear, _cc_cmp_safe, _ccdigest_init/update, _ccsha1/256/512_di in both our kernel and
+  corecrypto.kext). PAC plan (zeta planner): apfs 7941 edits (= zeta), AMFI 3367, AppleImage4 1938, CoreAnalytics 943,
+  Effaceable 490, IOCryptoAccel 422, CoreTrust 264, zlib 124, IOStorageFamily.kext 3695; corecrypto.kext does not decode
+  (hand-written asm) -> must be source. Missing runtime piece not seen by the gates: sweet_ufs is a BSD bdev, APFS needs an
+  IOMedia (IOBlockStorageDevice nub + IOStorageFamily). Emitter: rejects today (closure incomplete); its layout puts
+  ~3.1 MiB of read-only kext segments directly below __TEXT, inside the 16 MiB mkpayload already maps
+  (virt_base = __TEXT & ~32MiB), so mkpayload/shim should carry it unchanged (inferred, untested). Next kernel step:
+  port zeta's IOStorageFamily source build + an IOBlockStorageDevice nub over sweet_ufs, then source corecrypto
+  (native-source-crypto + build-corecrypto-14 + APFS crypto KPIs + ML-DSA). PAC probe result decides whether the
+  15.5k-edit PAC rewrite is needed at all.
+
 * **ast17 boot result (18:30Z, logs/ast17 + logs/ast17-var): backboardd NOT on Metal, kernel 2021 is the cause.** With 2021's data
   protection emulation, launchd's `dirs_cleaner` boot task (silent on every earlier kernel) now runs: its RENAME_SWAP of
   /private/var/tmp, /private/var/run, /private/var/mobile/tmp, /private/var/boot fails ENOTSUP on HFS+ and it then empties them, so

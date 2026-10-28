@@ -13,3 +13,5 @@ xnu/out-*/
 __pycache__/
 tools/identity/out/
 asteroids/out/
+# phone logs (serials, device state)
+logs/

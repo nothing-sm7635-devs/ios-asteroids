@@ -317,6 +317,15 @@
     (+[MCMUserIdentityCache personasAreSupported] -> NO; not applicable as is: this system runs personas 199/200);
     widget/poster stalls there traced to a missing nsurlsessiond (others spin on it); they hit the same "NSURL
     initFileURLWithPath: nil" in syncdefaultsd and did not solve it (not a missing directory, not a container lookup).
+  * WALLPAPER, root cause (ast16d: /private/var/tmp/sweetrun.log read from recovery): first boot's sweetposterset asked
+    PosterBoard for com.apple.MercuryPoster / fluidity.two (an ID read off an iOS 18 phone) and iOS 26's PosterBoard
+    answered every create with PBFPosterExtensionDataStoreErrorDomain -2218 ("0 configuration(s) for the lock role"),
+    20 tries x 10 s before the Collections fallback: no poster was ever selected, so the lock and home screen had no
+    wallpaper (Mercury itself loaded Chlorophyll fine). Mercury's iOS 26 descriptor IDs are built in Swift at run time
+    (not plain strings in the binary). Fix in root_tweaks18 FIRSTBOOT sweetrun.sh: each provider is asked
+    `sweetposterset --descriptors PROVIDER` first (logged), a descriptor it does not offer is replaced by its first
+    offered one, 5 tries for Mercury then 10 for Collections. Shell logic tested on the host with a stand-in tool
+    (unknown ID replaced; Mercury failing -> Collections selected).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

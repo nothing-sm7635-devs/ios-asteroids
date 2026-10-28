@@ -1009,29 +1009,41 @@ if [ $WALL = 1 ] && [ ! -e $PDONE ] && [ -d /Applications/SweetRun.app ]; then
 	rm -f $T/sweetrun.log $T/renegade-poster.rc
 	cat >$T/sweetrun.sh <<'EOS'
 export PATH=/usr/local/bin:/usr/bin:/bin
-n=0
-ok=1
-while [ $n -lt 20 ]; do
-	n=$((n+1))
-	echo "sweetposterset try $n"
-	/usr/local/bin/sweetposterset @WPROV@ @WDESC@ && { ok=0; break; }
-	sleep 10
-done
-echo "sweetposterset rc=$ok"
-# the Metal poster could not be selected (Mercury is black without the Metal device): fall back to the Collections poster, which ES renders
-if [ $ok != 0 ] && [ "@WPROV@:@WDESC@" != "@WPROV2@:@WDESC2@" ]; then
+# The descriptor asked for may not exist on this iOS (MercuryPoster's fluidity.two was read off an iOS 18 phone; iOS 26's
+# PosterBoard answered every create with PBFPosterExtensionDataStoreErrorDomain -2218, 20 tries before the fallback,
+# asteroids ast16d). So each provider is asked what it offers first; a descriptor it does not offer is replaced by its
+# first one, and the provider gets a few tries, not twenty.
+poster() {
+	prov=$1
+	want=$2
+	tries=$3
+	/usr/local/bin/sweetposterset --descriptors "$prov" >/private/var/tmp/poster-descriptors.txt 2>&1
+	cat /private/var/tmp/poster-descriptors.txt
+	have=$(sed -n 's/.* descriptor=\([^ ]*\).*/\1/p' /private/var/tmp/poster-descriptors.txt | grep -v '^(null)$')
+	d=$want
+	if [ -n "$have" ] && ! printf '%s\n' "$have" | grep -qx "$want"; then
+		d=$(printf '%s\n' "$have" | head -1)
+		echo "$prov does not offer $want: using $d"
+	fi
 	n=0
-	while [ $n -lt 10 ]; do
+	while [ $n -lt $tries ]; do
 		n=$((n+1))
-		echo "fallback sweetposterset try $n"
-		/usr/local/bin/sweetposterset @WPROV2@ @WDESC2@ && { ok=0; break; }
+		echo "sweetposterset $prov $d try $n"
+		if /usr/local/bin/sweetposterset "$prov" "$d"; then
+			/usr/local/bin/sweetposterset --cleanup "$prov" "$d"
+			echo "poster selected: $prov $d"
+			return 0
+		fi
 		sleep 10
 	done
-	[ $ok = 0 ] && { /usr/local/bin/sweetposterset --cleanup @WPROV2@ @WDESC2@; ok=0; }
-else
-# "already selected" counts as done (rc 0); drop duplicate Gradient configurations an older tool left behind
-[ $ok = 0 ] && /usr/local/bin/sweetposterset --cleanup @WPROV@ @WDESC@
+	return 1
+}
+ok=1
+poster @WPROV@ @WDESC@ 5 && ok=0
+if [ $ok != 0 ] && [ "@WPROV@:@WDESC@" != "@WPROV2@:@WDESC2@" ]; then
+	poster @WPROV2@ @WDESC2@ 10 && ok=0
 fi
+echo "sweetposterset rc=$ok"
 /usr/local/bin/sweeticonstyle default || ok=1
 echo $ok >/private/var/tmp/renegade-poster.rc
 EOS

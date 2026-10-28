@@ -1,0 +1,116 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 4a68b6a..0f35d0a 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1038,6 +1038,7 @@ sweet_ufs_read_part(const char *name, uint64_t off, void *dst, uint64_t len)
+  * path either. Blocks are the device's 4 KiB blocks. Caller: thread context, may block.
+  */
+ int sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *block_size, bool *writable);
++void sweet_ufs_nub_counts(uint64_t *reads, uint64_t *writes, uint64_t *errors);
+ int sweet_ufs_lun_io(uint64_t block, uint32_t count, void *buf, bool write, bool fua);
+ int sweet_ufs_lun_flush(void);
+ 
+@@ -1072,6 +1073,14 @@ ufs_read_capacity(uint64_t *blocks)
+ 	return 0;
+ }
+ 
++void
++sweet_ufs_nub_counts(uint64_t *reads, uint64_t *writes, uint64_t *errors)
++{
++	*reads = ss.nub_reads;
++	*writes = ss.nub_writes;
++	*errors = ss.nub_errors;
++}
++
+ int
+ sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *block_size, bool *writable)
+ {
+diff --git a/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp b/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp
+index 1a7bcde..a3c2374 100644
+--- a/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp
++++ b/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp
+@@ -19,6 +19,10 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IORegistryEntry.h>
++#include <libkern/c++/OSNumber.h>
++#include <kern/thread_call.h>
++#include <kern/clock.h>
+ #include <IOKit/storage/IOBlockStorageDevice.h>
+ #include <IOKit/storage/IOStorageDeviceCharacteristics.h>
+ #include <IOKit/storage/IOStorageProtocolCharacteristics.h>
+@@ -32,6 +36,7 @@ extern "C" int sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *bloc
+ extern "C" int sweet_ufs_lun_io(uint64_t block, uint32_t count, void *buf, bool write, bool fua);
+ extern "C" int sweet_ufs_lun_flush(void);
+ extern "C" void sweet_iomedia_publish(void);
++extern "C" void sweet_ufs_nub_counts(uint64_t *reads, uint64_t *writes, uint64_t *errors);
+ 
+ class SweetUfsBlockStorageDevice : public IOBlockStorageDevice {
+ 	OSDeclareDefaultStructors(SweetUfsBlockStorageDevice);
+@@ -244,6 +249,55 @@ SweetUfsBlockStorageDevice::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64
+  * IOBlockStorageDriver / IOGUIDPartitionScheme / IOMediaBSDClient personalities of
+  * iokit/KernelConfigTables.cpp do the rest.
+  */
++/* Bergamota 2038: what IOStorageFamily built on the nub (IOBlockStorageDriver -> IOMedia -> IOGUIDPartitionScheme ->
++ * IOMedia per partition -> IOMediaBSDClient "BSD Name"), with the nub's I/O counts: the kernel log otherwise says nothing
++ * about the matching (asteroids ast18 boot 2). Logged 20 s and 90 s after the nub was published. */
++static void
++sweet_iomedia_report(thread_call_param_t p0, thread_call_param_t p1)
++{
++	IORegistryEntry *nub = (IORegistryEntry *)p0;
++	uint64_t r = 0, w = 0, e = 0;
++	int n = 0;
++
++	sweet_ufs_nub_counts(&r, &w, &e);
++	IOLog("SWEET IOMEDIA: after %llu s: nub reads %llu writes %llu errors %llu\n", (uint64_t)(uintptr_t)p1, r, w, e);
++	IORegistryIterator *it = IORegistryIterator::iterateOver(nub, gIOServicePlane, kIORegistryIterateRecursively);
++	if (!it) {
++		IOLog("SWEET IOMEDIA: no registry iterator\n");
++		return;
++	}
++	OSObject *o;
++	while ((o = it->getNextObject()) != NULL) {
++		IORegistryEntry *ent = OSDynamicCast(IORegistryEntry, o);
++		if (!ent) {
++			continue;
++		}
++		OSString *bsd = OSDynamicCast(OSString, ent->getProperty("BSD Name"));
++		OSString *content = OSDynamicCast(OSString, ent->getProperty("Content"));
++		OSNumber *size = OSDynamicCast(OSNumber, ent->getProperty("Size"));
++		IOLog("SWEET IOMEDIA:   %s: bsd %s size %llu MiB content %s\n", ent->getMetaClass()->getClassName(),
++		    bsd ? bsd->getCStringNoCopy() : "-", size ? (size->unsigned64BitValue() >> 20) : 0ULL,
++		    content ? content->getCStringNoCopy() : "-");
++		if (++n >= 48) {
++			break;
++		}
++	}
++	IOLog("SWEET IOMEDIA: %d client(s) under the nub\n", n);
++	it->release();
++}
++
++static void
++sweet_iomedia_report_later(IORegistryEntry *nub, unsigned seconds)
++{
++	thread_call_t tc = thread_call_allocate(sweet_iomedia_report, nub);
++	uint64_t deadline = 0;
++	if (!tc) {
++		return;
++	}
++	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
++	thread_call_enter1_delayed(tc, (thread_call_param_t)(uintptr_t)seconds, deadline);
++}
++
+ extern "C" void
+ sweet_iomedia_publish(void)
+ {
+@@ -274,6 +328,8 @@ sweet_iomedia_publish(void)
+ 		return;
+ 	}
+ 	IOLog("SWEET IOMEDIA: %s published (IOBlockStorageDevice under IOResources)\n", nub->getAdditionalDeviceInfoString());
+-	nub->release();
++	/* the nub keeps this reference for the delayed reports (one object per boot) */
++	sweet_iomedia_report_later(nub, 20);
++	sweet_iomedia_report_later(nub, 90);
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

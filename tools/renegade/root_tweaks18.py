@@ -131,6 +131,36 @@ NO_BASEBAND_JOBS = ('com.apple.CommCenter', 'com.apple.voicemail.vmd')
 COMMCENTER_NONCELL = '/System/Library/LaunchDaemons/com.apple.CommCenter-noncellular.plist'
 
 
+# Daemons whose os_log we want in the console log (the kernel ring): OS_ACTIVITY_DT_MODE/ACTIVITY_LOG_STDERR put libtrace's
+# messages on stderr, StandardErrorPath sends that stderr to /dev/console (the |name| lines). Only the listed jobs; a
+# daemon's own StandardErrorPath, if any, is kept. RENEGADE_CONSOLE_JOBS=label,label overrides the list ("" = none).
+CONSOLE_JOBS = ('com.apple.chronod', 'com.apple.pluginkit.pkd', 'com.apple.containermanagerd', 'com.apple.PosterBoard')
+
+
+def console_jobs(root):
+    labels = os.environ.get('RENEGADE_CONSOLE_JOBS')
+    labels = tuple(l for l in labels.split(',') if l) if labels is not None else CONSOLE_JOBS
+    if not labels:
+        return
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    done = []
+    for sect in plist.values():
+        if not isinstance(sect, dict):
+            continue
+        for job in sect.values():
+            if not isinstance(job, dict) or job.get('Label') not in labels:
+                continue
+            env = job.setdefault('EnvironmentVariables', {})
+            env['OS_ACTIVITY_DT_MODE'] = 'YES'
+            env['ACTIVITY_LOG_STDERR'] = '1'
+            job.setdefault('StandardErrorPath', '/dev/console')
+            done.append(job['Label'])
+    save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('console_jobs: os_log on the console for %s' % (', '.join(done) if done else 'no job (labels not found)'))
+
+
 def launchd(root):
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
     st = os.stat(path)
@@ -1360,7 +1390,9 @@ def chlorophyll(root, src):
         # compute dispatches on again (an empty bgmtl-bb.skipcompute = no BGMTL_SKIP_COMPUTE): the luma statistics the
         # skipped compute_*_luma kernels produce decide the home-indicator colour (the "glitched gesture pill", ast19); the
         # ast9/ast10 hangs blamed on them predate the iova/quarantine/WC fixes. RENEGADE_CHLOROPHYLL_SKIPCOMPUTE=1 keeps the skip.
-        if os.environ.get('RENEGADE_CHLOROPHYLL_SKIPCOMPUTE') != '1':
+        # ast20 (2026-10-29): with them running, the screen went to a very high contrast after a while (CA's luma boost fed
+        # garbage statistics), so the skip stays the default; RENEGADE_CHLOROPHYLL_COMPUTE=1 runs them.
+        if os.environ.get('RENEGADE_CHLOROPHYLL_COMPUTE') == '1':
             write_file(os.path.join(root, 'private/var/db/bgmtl/bgmtl-bb.skipcompute'), '')
     print('chlorophyll: %s installed, backboardd job -> %s (%d entr%s), %s' % (', '.join(CHLOROPHYLL_FILES), BGL_LAUNCH, n,
           'y' if n == 1 else 'ies', 'not armed' if os.environ.get('RENEGADE_CHLOROPHYLL_ARM') == '0' else 'armed (bgmtl-bb.arm)'))
@@ -1478,6 +1510,7 @@ def base(root):
         quiet(root)
     containers(root)
     launchservices(root)
+    console_jobs(root)
     event_timing(root)
     usbnet(root)
     netcfg(root)
@@ -1527,6 +1560,7 @@ def main():
         quiet(root)
     containers(root)
     launchservices(root)
+    console_jobs(root)
     event_timing(root)
     usbnet(root)
     netcfg(root)

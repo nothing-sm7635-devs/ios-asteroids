@@ -376,6 +376,18 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **ast20 (kernel 20, root with 0009 + compute on; photos 2026-10-29 01:16): Control Center's backdrop blur now draws (0009
+  works) but its module tiles are white/missing; widgets still white "Waiting..."; wallpaper right for a while then the whole
+  screen went to a very high contrast = CA's luma boost fed by the re-enabled compute_*_luma kernels (garbage on this GPU:
+  Mesa 26.2 a8xx compute) -> skip is the default again (RENEGADE_CHLOROPHYLL_COMPUTE=1 to run them); torn icon bottoms =
+  render targets written back after a RECOVERY voided their fences (half-drawn, then never redrawn): fixing the hangs fixes
+  the icons; an app launch (Health) showed full-width black/white row stripes (a YCbCr or pitch problem: 0010 logs the
+  first 12 YCbCr surfaces' layout). sweetkill armed on pid 1 (posix_spawn exec runs in launchd's context) -> 2041 uses the
+  vfs context's process. sweetexecenv worked (env appended) but daemons' stderr is /dev/null: root tweak console_jobs()
+  gives chronod, pkd (label com.apple.pluginkit.pkd), containermanagerd and PosterBoard OS_ACTIVITY_DT_MODE=YES,
+  ACTIVITY_LOG_STDERR=1 and StandardErrorPath=/dev/console (their os_log then shows as |name| lines). Settings: the user saw
+  it come up after a long freeze (one-time wait?). GPU: 4 recoveries, 336 kicks at the default level.
+
 * **Full ast19 log review (2026-10-28 23:50Z) -> fixes:** (1) home-indicator ("gesture pill") colour = the luma statistics of
   compute_average_luma/compute_sum_luma, which BGMTL_SKIP_COMPUTE has dropped since ast9 (stale values): the root now ships an
   empty /private/var/db/bgmtl/bgmtl-bb.skipcompute (no skip; RENEGADE_CHLOROPHYLL_SKIPCOMPUTE=1 to keep it) -- watch the

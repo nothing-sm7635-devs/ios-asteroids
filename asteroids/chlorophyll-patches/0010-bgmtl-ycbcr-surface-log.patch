@@ -1,0 +1,22 @@
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -2066,6 +2066,19 @@
+          if (_tex) { _surfCopy = YES; _yuv2p = YES; }
+          else snprintf(why, sizeof(why), "IOSurface %u (%ux%u fmt 500, two planes): own memory refused: %s", IOSurfaceGetID(sf),
+                        _desc.width, _desc.height, why2);
++         {  // Bergamota: the first 12 such surfaces, for the layout (asteroids ast20: black/white row stripes in an app's launch)
++            static int yuv_logged;
++            if (__atomic_add_fetch(&yuv_logged, 1, __ATOMIC_RELAXED) <= 12) {
++               OSType pf = IOSurfaceGetPixelFormat(sf);
++               char line[200];
++               snprintf(line, sizeof(line), "YCbCr surface %u '%c%c%c%c' %ux%u planes %zu: plane0 %zux%zu bpr %zu, plane1 %zux%zu bpr %zu, usage 0x%lx: %s",
++                        IOSurfaceGetID(sf), (int)(pf >> 24), (int)(pf >> 16), (int)(pf >> 8), (int)pf, _desc.width, _desc.height,
++                        IOSurfaceGetPlaneCount(sf), IOSurfaceGetWidthOfPlane(sf, 0), IOSurfaceGetHeightOfPlane(sf, 0),
++                        IOSurfaceGetBytesPerRowOfPlane(sf, 0), IOSurfaceGetWidthOfPlane(sf, 1), IOSurfaceGetHeightOfPlane(sf, 1),
++                        IOSurfaceGetBytesPerRowOfPlane(sf, 1), (unsigned long)[d usage], _tex ? "own memory, decode/write-back" : why);
++               bgmtl_note_line(line);
++            }
++         }
+       } else if (!_tex) {
+          char why2[256] = { 0 };
+          _tex = chl_texture_create([device chl], &_desc, why2, sizeof(why2));

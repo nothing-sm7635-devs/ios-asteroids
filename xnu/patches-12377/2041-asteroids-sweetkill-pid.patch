@@ -1,0 +1,55 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 1e3ba52..f4cdb69 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -110,7 +110,7 @@
+ /* bsd/kern/sweet_amfi.c: boot-arg sweetsyserr */
+ void sweet_exec_env_trace(const char *name, int pid, const char *strings, const char *end);
+ void sweet_exec_delay(const char *leaf);
+-void sweet_exec_kill_timer(const char *leaf);
++void sweet_exec_kill_timer(const char *leaf, int pid);
+ #endif
+ #include <sys/reason.h>
+ #if SYSV_SHM
+@@ -2074,10 +2074,11 @@ grade:
+ 	/* argv/envv strings are complete here (by the printf("exec %s") below ip_strings is already consumed) */
+ 	if (imgp->ip_startargv != NULL && imgp->ip_endargv != NULL && imgp->ip_endenvv != NULL) {
+ 		const char *leaf = strrchr(imgp->ip_startargv, '/');
+-		sweet_exec_env_trace(leaf != NULL ? leaf + 1 : imgp->ip_startargv, proc_getpid(current_proc()),
+-		    imgp->ip_endargv, imgp->ip_endenvv);
++		/* posix_spawn activates the image in the parent's thread: the new process is the vfs context's, not current_proc() */
++		int exec_pid = proc_getpid(vfs_context_proc(imgp->ip_vfs_context));
++		sweet_exec_env_trace(leaf != NULL ? leaf + 1 : imgp->ip_startargv, exec_pid, imgp->ip_endargv, imgp->ip_endenvv);
+ 		sweet_exec_delay(leaf != NULL ? leaf + 1 : imgp->ip_startargv);
+-		sweet_exec_kill_timer(leaf != NULL ? leaf + 1 : imgp->ip_startargv);
++		sweet_exec_kill_timer(leaf != NULL ? leaf + 1 : imgp->ip_startargv, exec_pid);
+ 	}
+ #endif
+ 
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index f18d3c1..e7ffc20 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -1038,7 +1038,7 @@ sweet_exec_kill_fire(thread_call_param_t p0, thread_call_param_t p1)
+ }
+ 
+ void
+-sweet_exec_kill_timer(const char *leaf)
++sweet_exec_kill_timer(const char *leaf, int pid)
+ {
+ 	static char spec[256];
+ 	static int parsed;
+@@ -1069,11 +1069,11 @@ sweet_exec_kill_timer(const char *leaf)
+ 			}
+ 			done_mask |= 1U << idx;
+ 			strlcpy(sweet_kill_names[idx], leaf, sizeof(sweet_kill_names[idx]));
+-			thread_call_t tc = thread_call_allocate(sweet_exec_kill_fire, (thread_call_param_t)(uintptr_t)proc_selfpid());
++			thread_call_t tc = thread_call_allocate(sweet_exec_kill_fire, (thread_call_param_t)(uintptr_t)pid);
+ 			if (tc != NULL) {
+ 				clock_interval_to_deadline(secs, NSEC_PER_SEC, &deadline);
+ 				thread_call_enter1_delayed(tc, (thread_call_param_t)sweet_kill_names[idx], deadline);
+-				printf("SWEET KILL: %s[%d]: SIGABRT in %u s unless it exits\n", leaf, proc_selfpid(), secs);
++				printf("SWEET KILL: %s[%d]: SIGABRT in %u s unless it exits\n", leaf, pid, secs);
+ 			}
+ 			return;
+ 		}

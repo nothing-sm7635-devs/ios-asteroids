@@ -1,0 +1,163 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index bb13284..b84113e 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2987,6 +2987,13 @@ sweet_gpu_report(const char *why)
+ 	sweet_log_sync();
+ }
+ 
++/* The CP's IB pointers for a hang dump (SweetAdreno's wait); the A810 only. */
++bool
++sweet_gpu_ib_state(uint32_t out[24])
++{
++	return sweet_board_asteroids() && sweet_a810_ib_state(out);
++}
++
+ /* The GPU stopped answering; no recovery is attempted (docs/GPU_KERNEL.md, risks): nothing more is submitted. */
+ void
+ sweet_gpu_mark_lost(void)
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index 0e88cc0..f3cf4ad 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1525,6 +1525,29 @@ sweet_a810_hang_report(const char *why)
+ 	sweet_log_sync();
+ }
+ 
++/* The CP's indirect-buffer pointers (a6xx.xml A8XX-: CP_IB1_BASE 0x900, REM 0x902, INIT 0x903, IB2 0x904.., IB3 0x908..), for
++ * the BR pipe (out[0..11]) and the BV pipe (out[12..23]): base lo/hi, remaining and initial dwords of IB1, IB2, IB3. */
++bool
++sweet_a810_ib_state(uint32_t out[24])
++{
++	static const uint32_t regs[12] = {0x900, 0x901, 0x902, 0x903, 0x904, 0x905, 0x906, 0x907, 0x908, 0x909, 0x90a, 0x90b};
++	if (!a810_cp_started || !a810_gpu_writes) {
++		return false;
++	}
++	lck_mtx_lock(&a810_lck);
++	const uint32_t pipes[2] = {A810_PIPE_BR, A810_PIPE_BV};
++	for (unsigned p = 0; p < 2; p++) {
++		a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, pipes[p] << A810_CP_APERTURE_CNTL_HOST_PIPEID_SHIFT);
++		for (unsigned i = 0; i < 12; i++) {
++			out[p * 12 + i] = 0;
++			a810_reg_read(NULL, regs[i], &out[p * 12 + i]);
++		}
++	}
++	a810_reg_write(NULL, A810_CP_APERTURE_CNTL_HOST, 0);
++	lck_mtx_unlock(&a810_lck);
++	return true;
++}
++
+ /* The GMU always-on counter (19.2 MHz), msm's MSM_PARAM_TIMESTAMP (a6xx_gmu_get_timestamp reads the same pair). */
+ bool
+ sweet_a810_timestamp(uint64_t *value)
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index 4a8953d..209bffe 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -49,6 +49,8 @@ bool sweet_a810_timestamp(uint64_t *value);
+ void sweet_a810_hang_report(const char *why);
+ /* Polls, logs and clears GPU SMMU faults (sweet_a810_msm.c); false: nothing for the caller to do. */
+ bool sweet_a810_msm_fault_check(void);
++/* CP_IB1/2/3 base, remaining and initial size for BR (0..11) and BV (12..23); false before the CP ran. */
++bool sweet_a810_ib_state(uint32_t out[24]);
+ 
+ /* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
+ bool sweet_a810_msm_ready(void);
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index b722f95..7a67a61 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -58,6 +58,7 @@ bool sweet_gpu_fence_done(uint32_t fence);
+ uint32_t sweet_gpu_fence_last(void);
+ void sweet_gpu_mark_lost(void);
+ void sweet_gpu_report(const char *why);
++bool sweet_gpu_ib_state(uint32_t out[24]);
+ void sweet_gpu_debug(uint32_t *w);
+ void SweetAdrenoPublish(void);
+ }
+@@ -121,6 +122,8 @@ class SweetAdrenoUserClient : public IOUserClient {
+ 	IOReturn copyIn(uint64_t addr, void *dst, size_t len);
+ 	bool waitFence(uint32_t fence, uint64_t ns);
+ 	void releaseGem(struct sweet_gem *g);
++	void dumpIova(const char *what, uint64_t iova, uint32_t dwords, uint32_t at);
++	void dumpHang(void);
+ 	IOReturn mapGem(struct sweet_gem *g, uint32_t flags, uint32_t *handle, uint64_t setIova, uint64_t tail = 0);
+ 
+ 	IOReturn gemNew(struct sweet_msm_gem_new *r);
+@@ -365,6 +368,7 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 			if (ns >= 100 * NSEC_PER_MSEC && reported != fence) {
+ 				reported = fence;
+ 				sweet_gpu_report("wait timed out");
++				dumpHang();
+ 			}
+ 			if (ns >= NSEC_PER_SEC && waited >= cap) {
+ 				sweet_gpu_mark_lost();
+@@ -381,6 +385,68 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 	}
+ }
+ 
++/*
++ * 2014: a hang's command streams in the kernel log, for decoding offline (Mesa's cffdec): the BR and BV pipes' IB1/IB2/IB3
++ * pointers, then the dwords of each IB that lies in one of this client's BOs with a kernel alias (Turnip's command-stream
++ * BOs are GEM_NEW ones). Up to 4096 dwords an IB, eight a line: "SWEET HANG <what> <iova>: w0 .. w7". Once a boot.
++ */
++void
++SweetAdrenoUserClient::dumpIova(const char *what, uint64_t iova, uint32_t dwords, uint32_t at)
++{
++	if (iova == 0 || dwords == 0 || fGems == NULL) {
++		return;
++	}
++	if (dwords > 4096) {
++		dwords = 4096;
++	}
++	for (uint32_t i = 0; i < GEM_MAX; i++) {
++		struct sweet_gem *g = &fGems[i];
++		if (g->md == NULL || g->kva == NULL || g->iova == IOVA_UNSET || iova < g->iova || iova >= g->iova + g->size) {
++			continue;
++		}
++		uint64_t off = iova - g->iova;
++		if (off + (uint64_t)dwords * 4 > g->size) {
++			dwords = (uint32_t)((g->size - off) / 4);
++		}
++		IOLog("SWEET HANG %s %#llx: %u dwords in handle %u (BO %#llx+%#llx), the CP at dword %u\n", what, iova, dwords, i,
++		    g->iova, g->size, at);
++		const volatile uint32_t *w = (const volatile uint32_t *)(g->kva + off);
++		for (uint32_t k = 0; k < dwords; k += 8) {
++			uint32_t v[8] = {0};
++			for (uint32_t j = 0; j < 8 && k + j < dwords; j++) {
++				v[j] = w[k + j];
++			}
++			IOLog("SWEET HANG %s %#llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", what, iova + (uint64_t)k * 4, v[0], v[1], v[2],
++			    v[3], v[4], v[5], v[6], v[7]);
++		}
++		return;
++	}
++	IOLog("SWEET HANG %s %#llx: not in a BO of this client with a kernel alias\n", what, iova);
++}
++
++void
++SweetAdrenoUserClient::dumpHang(void)
++{
++	static bool done;
++	uint32_t s[24];
++	if (done || !sweet_gpu_ib_state(s)) {
++		return;
++	}
++	done = true;
++	static const char *const names[6] = {"BR-IB1", "BR-IB2", "BR-IB3", "BV-IB1", "BV-IB2", "BV-IB3"};
++	for (unsigned k = 0; k < 6; k++) {
++		const uint32_t *r = &s[(k / 3) * 12 + (k % 3) * 4];
++		IOLog("SWEET HANG %s base %#llx rem %u init %u\n", names[k], ((uint64_t)r[1] << 32) | r[0], r[2], r[3]);
++	}
++	for (unsigned k = 0; k < 6; k++) {
++		const uint32_t *r = &s[(k / 3) * 12 + (k % 3) * 4];
++		uint64_t base = ((uint64_t)r[1] << 32) | r[0];
++		if (base != 0 && r[3] != 0) {
++			dumpIova(names[k], base, r[3], r[3] >= r[2] ? r[3] - r[2] : 0);
++		}
++	}
++}
++
+ /*
+  * 2013: closed BOs stay mapped (pages and surface kept) until the GPU has completed QUARANTINE more submissions after the
+  * close (boot-arg sweetgpuquar=N, 0 = unmap at close as before). On the A810 a submission made AFTER a BO was closed still

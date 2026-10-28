@@ -200,6 +200,14 @@
     boot because ast10b's DEAD-MAN left /private/var/tmp/bgmtl-bb.off and nothing clears /private/var/tmp at boot (iOS logs
     unchanged from ast10b, no GPU submissions in logs/ast11). Fix: bgl-launch removes bgmtl-bb.off on the first start of a
     new boot (bgmtl-bb.state names another boot). Needs a root update + flash, then boot ast11 again.
+  * ast11b (ast11 kernel = 6bd1eb4 with the quarantine, root with the per-boot off switch, 2026-10-28): GPU used, one SMMU
+    fault (FAR 0x467d4980, never-allocated space, fence 652; no freed-range faults any more: the quarantine works), then a
+    hang at fence 1634 with no new fault, rbbm 0xec0405 again. The three stray FARs 0x494fab00/0x43645280/0x467d4980 read as
+    floats are 850608.0/228.3/16210.4 (hi word 0): float data used as an address, i.e. a shader reading its buffers at the
+    wrong place; the busy units fit a shader that never ends. Render encoders serve set*BufferOffset (compute does not).
+    Kernel 2014: on the first timed-out wait, the BR/BV CP_IB1/2/3 BASE/REM/INIT (a6xx.xml A8XX-: 0x900-0x90b through
+    CP_APERTURE_CNTL_HOST) and the dwords of each IB found in this client's kva BOs ("SWEET HANG ..." lines), to decode the
+    hanging draw offline with Mesa's cffdec.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

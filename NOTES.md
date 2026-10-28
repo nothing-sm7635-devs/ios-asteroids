@@ -373,6 +373,47 @@
         AppleARMWatchdogTimer (all arm64e Apple kexts), kpi.bsd/iokit/libkern/mach/private/unsupported/dsep.
     Kernelcaches (release + research) in research/ios26/kc (ipsw download --kernel; not in git). Decision: stay on HFS+
     with targeted emulation (decmpfs 2019, data protection 2021, fsctl next); revisit when Apple publishes 12377.16x.
+
+### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
+* State of the pipeline:
+  - Kernel CI run 40687928993 = Bergamota 4351c0c (patches through 2021: write-combine reassertion, context switch on
+    client change, 50 ms WPTR kick, GEM_MAX 16384; data protection xattr emulation). When the user names the zip:
+    unzip to research/ios26/kernel-astNN, check errors.txt and the strings "were no longer write-combined" /
+    "stalled fence: WPTR" ; build the boot image with the diag2 args (base args + sweeta810=16 sweetfb_hz=60
+    sweetscan=MobileSafari,Preferences,backboardd,SpringBoard sweetsyserr=PosterBoard,MercuryPosterExt,
+    CollectionsPoste,sweetposterset,MobileSafari,Preferences,chronod,WidgetRenderer).
+  - The user is doing a FULL root rebuild (renegade root) that includes: wallpaper_png (HEIC->PNG, ce88dd4),
+    TU_DEBUG sysmem,noubwc,nocb, first-boot poster selection from PosterBoard's live descriptor list (9ed92af),
+    safe plist saves (3dc1038), Chlorophyll 0001-0005 (0005 = flush imported IOSurfaces once per command buffer).
+* What to read after that boot (recovery, ADB): kernel log (sweet-log-pull) + /private/var/tmp/{sweetrun.log,
+  bgl-backboardd.log,bgmtl.log,poster-descriptors.txt} + /private/var/log/renegade-firstboot.log. Questions:
+  does PosterBoard still answer -2218 (2021 should fix it)? wallpaper drawn? icons still stale in their lower part
+  (0005)? hangs/recoveries count and whether WC pages were reset? Safari's exception, Settings' failing syscalls
+  (diag2 trace), chronod/WidgetRenderer syscalls.
+* NEXT WORK, in order (user asked for all of it):
+  1. PAC probe (user: "write the PAC probe and push it"; NOT WRITTEN YET when context ran out). Design: new
+     osfmk/arm64/sweet_cpu_probe.c (+ osfmk/conf/files.arm64 "standard"), called from bsd/kern/bsd_init.c next to
+     sweet_rtc_asteroids_root_mounted() (all CPUs up). (a) census on EVERY core via cpu_broadcast_xcall_simple
+     (osfmk/arm/machine_routines.h): MIDR (S3_0_C0_C0_0), MPIDR, REVIDR, ID_AA64PFR0/1 (S3_0_C0_C4_0/1), ZFR0, SMFR0,
+     DFR0, ISAR0/1/2 (S3_0_C0_C6_0/1/2), MMFR0/1/2 (S3_0_C0_C7_0/1/2), CTR_EL0 (S3_3_C0_C0_1), DCZID_EL0, CLIDR,
+     SCTLR_EL1; print per core. (b) PAC round trip, boot core first in thread context with sweet_log_sync() before each
+     step (reading APIAKey S3_0_C2_C1_0/1 or PACIA may trap to Gunyah -> panic; the log must say which step), then
+     the other cores via cross-call only if the boot core passed: save keys, write a test key, set SCTLR_EL1.EnIA
+     (bit 31, SCTLR_PACIA_ENABLED), PACIA x9,x10 = .inst 0xdac10149, AUTIA x9,x10 = .inst 0xdac11149 on a kernel
+     pointer with modifier 0x1234, check signed != original and authenticated == original, restore SCTLR and keys.
+     Skip the wrong-modifier test (FEAT_FPAC would fault). Boot-arg sweetpacprobe=0 skips (b); also build an image
+     without it in case (b) panics. Decode ISAR1 APA/API/GPA/GPI, ISAR2 APA3/GPA3, PFR1 BTI/MTE/SME, PFR0 SVE.
+  2. If PAC works under Gunyah: plan arm64e userland unmodified (no Renegade strip), PAC keys per process, and
+     Apple arm64e kexts become possible (APFS still blocked by the xnu .162.14 vs public .121.6 version gap).
+  3. SoC re-check of SDM845-era constants (memory/asteroids-soc-recheck): display MDP (CTL0 flush 0xae16018 on SM7635),
+     SMMU, memory map, GPU params; CPU features from the census.
+  4. containermanagerd: log fsctl/ioctl commands that HFS answers ENOTTY (hfs_vnop_ioctl), then answer the harmless
+     APFS ones; Safari's nil safari_mobileSafariContainerDirectoryURL (its container exists: 4CB9390A...).
+  5. Metal for every process (UniXNU AdrenoMetal approach): GPU service advertises a Metal plug-in bundle (Chlorophyll
+     packaged as one; BGMTLDevice already subclasses _MTLDevice) + sandbox grant to open/map the GPU user client;
+     first backboardd, PosterBoard + poster extensions, WidgetRenderer, iconservicesagent.
+  6. Display: direct scanout (GopFramebuffer), IOMFBDisplayRefresh reporting; persist Turnip pipeline caches.
+* Reference ports and what to take from them: memory/asteroids-reference-ports and the "Reference sweep" entry above.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

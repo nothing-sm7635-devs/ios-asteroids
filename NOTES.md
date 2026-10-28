@@ -249,6 +249,16 @@
     was logged once). Kernel 2018: small (<1 MiB) BOs first-fit in the lower half, large in the upper half; HFS refuses
     UF_COMPRESSED and drops VOL_CAP_FMT_DECMPFS_COMPRESSION; up to 64 recoveries a boot. Reflash the root once to drop
     the files already compressed on the phone.
+  * Kernel 2019: decmpfs decompressors for LZVN (types 7, 8) and LZFSE (11, 12). Apple's reference decoder (lzfse/lzfse,
+    BSD-3) vendored in bsd/kern/sweet_lzfse (libc includes from sweet_lzfse_shim.h under KERNEL, assert a no-op so a
+    damaged stream cannot panic a DEVELOPMENT kernel, malloc fallback not built, warnings of the reference code ignored),
+    layouts in sweet_lzfse_chunks.h (xattr after the 16-byte header; resource fork = LE uint32 chunk table, 64 KiB chunks;
+    a chunk is "bvx" LZFSE, bare LZVN for 7/8, or stored after 0x06/0xff), glue bsd/kern/sweet_decmpfs_lzfse.c
+    (registered from decmpfs_init; logs "SWEET LZFSE: ..." with the first bytes of anything it cannot decode). Host test
+    tools/test-sweet-lzfse.c (the vendored files and the chunk header as they are, against the reference encoder: all
+    layouts, partial windows across chunk boundaries, three-vector scatter, ASan/UBSan) passes; every file but the glue
+    compiles under clang -Wall -Wextra -Wpedantic -Wstrict-prototypes -Werror. 2018's HFS compression refusal stays (iOS
+    does not create new compressed files); 2019 reads the ones that exist.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

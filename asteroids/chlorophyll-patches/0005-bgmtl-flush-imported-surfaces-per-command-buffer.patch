@@ -1,0 +1,27 @@
+--- a/src/bgmtl.m	2026-10-28 16:34:08.699017943 +0530
++++ b/src/bgmtl.m	2026-10-28 16:34:09.151111663 +0530
+@@ -586,6 +586,7 @@
+    BOOL _surfCopy;       // an IOSurface the GPU could not import: own memory, refreshed from the surface at each use
+    BOOL _xr2p;           // ... a two-plane RGB10A8_2P_XR10 one ('b3a8': XR10 RGB + A8 alpha), decoded into BGRA8 at each refresh
+    uint32_t _surfSeed;   // the surface's seed at the last refresh (an unchanged surface is not copied again)
++   unsigned long _flushSeq;   // the command buffer that last flushed this imported surface (once per command buffer)
+    BOOL _surfFresh;      // _surfSeed is valid: the surface was decoded or written back at least once (a seed may be 0)
+    uint32_t _xrUses;     // uses since the last XR10 decode (bgmtl.xr10log)
+    NSUInteger _ncLength;
+@@ -2176,7 +2177,15 @@
+       if (changed) seeds[key] = @(seed);
+       if ([seeds count] > 4096) [seeds removeAllObjects];
+       os_unfair_lock_unlock(&lk);
+-      if (changed) chl_texture_flush_surface(_tex);
++      /* Also once per command buffer, whatever the seed says: a producer that draws into a surface it already holds mapped,
++       * without a lock/unlock (which moves the seed), leaves its last lines dirty in the CPU caches, and this GPU, unlike
++       * Apple's, does not snoop them: the bottom of iconservicesagent's icons came out as old memory (asteroids ast16c). The
++       * kernel's BO_SYNC cleans the surface's lines whichever core and process wrote them (the caches are physically
++       * tagged). */
++      if (changed || (cb && _flushSeq != cb->_seq)) {
++         chl_texture_flush_surface(_tex);
++         if (cb) _flushSeq = cb->_seq;
++      }
+    } else if (_xr2p && _surface) {
+       IOSurfaceRef sf = (IOSurfaceRef)_surface;
+       uint32_t seed = IOSurfaceGetSeed(sf);

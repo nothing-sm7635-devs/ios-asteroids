@@ -301,6 +301,22 @@
     ios26-ast16-diag (kernel 16; sweetsyserr for MobileSafari, Preferences, chronod, WidgetRenderer, SpringBoard,
     PosterBoard, the poster extensions, containermanager[d]; sweetscan as before); then tools/sweet-hfs-pull.py
     --containers (new: every container with its MCMMetadataIdentifier) to see whether com.apple.mobilesafari has one.
+  * ast16c (diag image; root with texpool off + Mercury Metal step; 2026-10-28): user: Settings still freezes, icons still
+    glitch, Safari dead. BGMTL_TEXPOOL_MB=0 confirmed active: the pool was NOT the icon cause (theory dropped). sweetsyserr
+    budget (900) eaten by containermanagerd (856): no Safari/Settings lines (lesson: leave containermanagerd out).
+    Container inventory (tools/sweet-hfs-pull.py --containers, 626 containers): com.apple.mobilesafari HAS a data
+    container (4CB9390A...), so the container exists and Safari's lookup from inside Safari fails. Widget containers
+    exist too (chrono.WidgetRenderer-*, PluginKitPlugin widget extensions).
+    Icons, re-derived: iconservicesagent draws RGhA icon surfaces with the CPU (cacheable mapping) and backboardd's GPU
+    samples them zero-copy; the A810 does not snoop dirty CPU lines (Snapintosh compat/adreno-coherent.h: on its A8XX
+    non-coherent leaves are not snooped; it proves IO-coherence with a self-test and maps cacheable+inner-shareable), so
+    the last-written lines (the icon's bottom) read as old RAM. Chlorophyll only cleaned a surface when its seed moved;
+    a producer writing a held mapping without lock/unlock never moves it. Chlorophyll 0005: BO_SYNC an imported surface
+    once per command buffer as well. Long-term: Snapintosh-style IO-coherent GPU leaves with a boot self-test.
+    HackiOS userland (hackios-xnu-userland, iOS 16.5) checked: containermanagerd persona polling fix
+    (+[MCMUserIdentityCache personasAreSupported] -> NO; not applicable as is: this system runs personas 199/200);
+    widget/poster stalls there traced to a missing nsurlsessiond (others spin on it); they hit the same "NSURL
+    initFileURLWithPath: nil" in syncdefaultsd and did not solve it (not a missing directory, not a container lookup).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

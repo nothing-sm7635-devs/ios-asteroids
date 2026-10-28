@@ -376,6 +376,33 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **MEASURED ON THE HARDWARE (2026-10-28 19:00Z, Lineage recovery, adb root; dumps in research/asteroids-hw/: asteroids.dts
+  (from /sys/firmware/fdt), dmesg-recovery.txt, iomem.txt, interrupts.txt, cpuinfo.txt -- git-ignored):**
+  - **PAC WORKS AT EL1 UNDER GUNYAH:** Linux 6.6 logs `CPU features: detected: Address authentication (architected QARMA3
+    algorithm)`, /proc/cpuinfo has `paca pacg bti`. Cores: 4x Cortex-A520 (MIDR 0x410fd801) + 4x Cortex-A720 (0x410fd811),
+    `kvm-arm.mode=protected`. So the PAC probe is unnecessary; an arm64e kernel with native key writes (iOSPlus10's "0005
+    native PAC" plan, sheng's path) and unmodified arm64e userland/kexts are possible. Not started.
+  - GPU per DT: `qcom,adreno-gpu-gen8-3-0` (Qualcomm's gen8 driver family; Turnip calls it a810), regs 0x3d00000+0x40000,
+    rscc 0x3d50000, cx_misc 0x3d9e000, kgsl-smmu 0x3da0000+0x40000, ubwc-mode 4, min-access-length 32, pwrlevels up to
+    1150 MHz (initial level 8), zap region 0x9ea9a000. Memory: 7.8 GB, gunyah_hyp_region 0x80000000+14 MB.
+  - Our kernel runs the GPU at a fixed HFI level 6 (763 MHz) and never changes it at run time (no DCVS lines).
+* **ast17b (2021 off via sweetdataprotect=0, logs/ast17b + logs/ast17b-var): Metal on (no dirs_cleaner), everything else the
+  same.** Found: (1) iOS's dirs_cleaner boot task really empties /private/var/tmp, /var/run, /var/mobile/tmp at boot once
+  the data-protection class reads back (2021) -- that is stock behaviour, so the arm switches now also live in
+  /private/var/db/bgmtl (bgl-launch, inject patch 0006, root_tweaks); 2021 stays ON (F_SETPROTECTIONCLASS = fcntl 63
+  goes straight to VNOP_SETATTR: Preferences, chronod and sqlite got ENOTSUP for it on ast17b). (2) GPU: 41 "stalled
+  fence" WPTR kicks (AHB fence never dropped a write: retries 0), 3 real hangs with RECOVERY: cffdump of the hang
+  (tools/sweet-hang2rd.py) shows the CP consumed the whole IB (draws, event writes, WAIT_FOR_IDLE, WAIT_MEM_WRITES,
+  WAIT_FOR_ME) and then the pipeline never idled (RBBM busy HLSQ/SP/CCU, no SMMU fault, FSR 0x400 is the idle value):
+  a shader/pipeline stall after a 6-index quad draw, not a CP or memory-ordering problem. Not identified further.
+  (3) backboardd died once of SIGBUS delivered while in mach_msg2_trap (far 0, code 0; the inject's handler caught it):
+  an asynchronous signal, sender unknown. (4) Safari: still the ObjC exception from Foundation (nil container URL);
+  mediaplaybackd: ObjC exception in CFPreferences; MessagesBlastDoor: Swift assertion in Sandbox.initialize (sandbox);
+  Preferences/chronod: fcntl(63) ENOTSUP (2021 fixes), ffsctl ENOTTY (cmd now logged by 2022), clonefileat ENOTSUP.
+  (5) IOSurfaces with a 480-byte pitch (RG8 228x162 / 240x240) are copied, not imported (Turnip needs 64-byte pitch).
+* **Next boot (kernel 18 = 2022, a rebuilt root with 0006 + new bgl-launch + /private/var/db/bgmtl):** base args WITHOUT
+  sweetdataprotect=0; add SpringBoard to sweetsyserr for Control Center / recents.
+
 * **APFS gap audit (2026-10-28, static only, tools/apfs/; supersedes the 'NOT viable' verdict below for the KDK route).**
   UniXNU-zeta's gates (copied with attribution, small Bergamota changes) run against OUR ast17 kernel and the kexts zeta
   pinned: KDK 26.5.2 25F84 (apfs 2811.121.1, slice sha d82b3ebe..., AMFI 36a4f3e2..., zlib dba9d809... = zeta's pins). NOTE

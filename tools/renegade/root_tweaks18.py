@@ -137,6 +137,32 @@ COMMCENTER_NONCELL = '/System/Library/LaunchDaemons/com.apple.CommCenter-noncell
 CONSOLE_JOBS = ('com.apple.chronod', 'com.apple.pluginkit.pkd', 'com.apple.containermanagerd', 'com.apple.PosterBoard')
 
 
+# configd's InterfaceNamer publishes Plugin:InterfaceNamer *QUIET* only through an IONetworkStack user client, which
+# this kernel has no IONetworkStack for; until then every SCNetworkInterfaceCopyAll waits (Settings froze in
+# _WifiStateChanged -> SCDynamicStoreNotifyWait, asteroids ast21; wifid the same) for WaitStackTimeout, 300 s by default.
+# A few seconds end the wait (iOSPlus10 docs/notes.md section 71, proven there). RENEGADE_IFNAMER_WAIT_S overrides (0: off).
+IFNAMER_PLIST = 'System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist'
+
+
+def ifnamer_wait(root):
+    secs = os.environ.get('RENEGADE_IFNAMER_WAIT_S', '5')
+    try:
+        secs = float(secs)
+    except ValueError:
+        raise SystemExit('RENEGADE_IFNAMER_WAIT_S must be a number of seconds')
+    if secs <= 0:
+        return
+    path = os.path.join(root, IFNAMER_PLIST)
+    if not os.path.exists(path):
+        print('ifnamer_wait: %s missing, skipped' % IFNAMER_PLIST)
+        return
+    st = os.stat(path)
+    data = load(path)
+    data['WaitStackTimeout'] = secs
+    save(path, data, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print('ifnamer_wait: InterfaceNamer WaitStackTimeout = %g s (Settings/wifid no longer wait 300 s for a network stack)' % secs)
+
+
 def console_jobs(root):
     labels = os.environ.get('RENEGADE_CONSOLE_JOBS')
     labels = tuple(l for l in labels.split(',') if l) if labels is not None else CONSOLE_JOBS
@@ -1511,6 +1537,7 @@ def base(root):
     containers(root)
     launchservices(root)
     console_jobs(root)
+    ifnamer_wait(root)
     event_timing(root)
     usbnet(root)
     netcfg(root)
@@ -1561,6 +1588,7 @@ def main():
     containers(root)
     launchservices(root)
     console_jobs(root)
+    ifnamer_wait(root)
     event_timing(root)
     usbnet(root)
     netcfg(root)

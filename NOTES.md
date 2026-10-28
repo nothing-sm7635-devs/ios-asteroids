@@ -376,6 +376,14 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **SETTINGS FREEZE EXPLAINED (ast21, sweetkill crash report 2026-10-29 02:10Z):** Preferences waits in `_WifiStateChanged ->
+  _SCNetworkInterfaceCopyAllWithPreferences -> dispatch_once -> SCDynamicStoreNotifyWait`: configd's InterfaceNamer never
+  publishes Plugin:InterfaceNamer *QUIET* (that needs an IONetworkStack user client; this kernel has none), the wait ends
+  with WaitStackTimeout = 300 s (hence "it started working after a while"). Same wall and fix as iOSPlus10 notes section
+  71: root tweak ifnamer_wait() sets WaitStackTimeout 5 s in InterfaceNamer.bundle/Info.plist (RENEGADE_IFNAMER_WAIT_S).
+  The real fix later is a stub IONetworkStack with a user client (HackiOS MiniIONetworkStack.cpp). NOTE: the ast21 root was
+  the previous build (no console_jobs, compute on, no 0010): rebuild before the next boot. GPU: 5 recoveries.
+
 * **ast20 (kernel 20, root with 0009 + compute on; photos 2026-10-29 01:16): Control Center's backdrop blur now draws (0009
   works) but its module tiles are white/missing; widgets still white "Waiting..."; wallpaper right for a while then the whole
   screen went to a very high contrast = CA's luma boost fed by the re-enabled compute_*_luma kernels (garbage on this GPU:

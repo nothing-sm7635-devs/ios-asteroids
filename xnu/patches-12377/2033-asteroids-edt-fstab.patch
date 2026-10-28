@@ -1,0 +1,220 @@
+diff --git a/bsd/kern/kern_newsysctl.c b/bsd/kern/kern_newsysctl.c
+index 20d071c..c96b2bc 100644
+--- a/bsd/kern/kern_newsysctl.c
++++ b/bsd/kern/kern_newsysctl.c
+@@ -249,6 +249,15 @@ sysctl_register_oid_locked(struct sysctl_oid *new_oidp,
+ 	*prevp = oidp;
+ }
+ 
++/* SWEET: UniXNU-zeta's native-edt-fstab (BSD-2-Clause-Patent), always on for this board */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(XNU_EDT_FSTAB)
++#define XNU_EDT_FSTAB 1
++#endif
++#if defined(XNU_EDT_FSTAB) && XNU_EDT_FSTAB
++/* bsd/vfs/vfs_subr.c: hangs vfs.generic.apfs.edt_fstab under the APFS kext's node. */
++extern void vfs_edt_fstab_attach(struct sysctl_oid *oidp);
++#endif
++
+ void
+ sysctl_register_oid(struct sysctl_oid *new_oidp)
+ {
+@@ -297,6 +306,9 @@ sysctl_register_oid(struct sysctl_oid *new_oidp)
+ 	lck_rw_lock_exclusive(&sysctl_geometry_lock);
+ 	sysctl_register_oid_locked(new_oidp, oidp);
+ 	lck_rw_unlock_exclusive(&sysctl_geometry_lock);
++#if defined(XNU_EDT_FSTAB) && XNU_EDT_FSTAB
++	vfs_edt_fstab_attach(new_oidp);
++#endif
+ }
+ 
+ __startup_func
+diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+index b1328f4..e50006f 100644
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -5354,6 +5354,185 @@ SYSCTL_INT(_vfs_generic, OID_AUTO, print_busy_vnodes,
+     "VFS log busy vnodes blocking unmount");
+ #endif
+ 
++/* SWEET: UniXNU-zeta's native-edt-fstab (BSD-2-Clause-Patent), always on for this board */
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(XNU_EDT_FSTAB)
++#define XNU_EDT_FSTAB 1
++#endif
++#if defined(XNU_EDT_FSTAB) && XNU_EDT_FSTAB
++#include <pexpert/device_tree.h>
++#include <libkern/OSKextLib.h>
++/*
++ * vfs.generic.apfs.edt_fstab: the entries of the device tree's
++ * /filesystems/fstab, which the iOS APFS kext publishes and which Libinfo's
++ * getfsent() and dyld read instead of /etc/fstab when the root is APFS. The
++ * KDK APFS kext has no such sysctl, so the kernel hangs it under that kext's
++ * vfs.generic.apfs node when the node registers (vfs_edt_fstab_attach).
++ * Ephemeral entries become a "ramdisk" entry, which mount(8) builds as a
++ * tmpfs from the template in its options; the first read that returns one
++ * loads the prelinked tmpfs kext, as AppleBSDKextStarterTMPFS does on iOS
++ * (there is no kextd to load it on demand). The System role is the mounted
++ * root. Other roles would need the APFS role lookup and are left out.
++ */
++struct edt_fstab {
++	char            fs_spec[32];
++	char            fs_file[64];
++	char            fs_vfstype[32];
++	char            fs_mntops[64];
++	char            fs_type[32];
++	int             fs_freq;
++	int             fs_passno;
++	uint32_t        fs_role;
++};
++/* Libinfo and dyld step through the buffer by this size. */
++_Static_assert(sizeof(struct edt_fstab) == 0xec, "edt_fstab layout");
++/* dyld reads ten entries at most. */
++#define EDT_FSTAB_MAX   10
++#define EDT_ROLE_SYSTEM 1
++#define EDT_TMPFS_KEXT  "com.apple.filesystems.tmpfs"
++
++static bool edt_fstab_tmpfs_loaded;
++
++static bool
++edt_fstab_string(DTEntry entry, const char *name, char *out, size_t size)
++{
++	void const *value;
++	unsigned int length;
++	size_t used;
++
++	if (SecureDTGetProperty(entry, name, &value, &length) != kSuccess) {
++		return false;
++	}
++	used = strnlen(value, length);
++	if (used >= size) {
++		return false;
++	}
++	memcpy(out, value, used);
++	out[used] = '\0';
++	return true;
++}
++
++static uint32_t
++edt_fstab_number(DTEntry entry, const char *name)
++{
++	void const *value;
++	unsigned int length;
++	uint32_t number;
++
++	if (SecureDTGetProperty(entry, name, &value, &length) != kSuccess || length != sizeof(number)) {
++		return 0;
++	}
++	memcpy(&number, value, sizeof(number));
++	return number;
++}
++
++static int
++sysctl_edt_fstab SYSCTL_HANDLER_ARGS
++{
++#pragma unused(oidp, arg1, arg2)
++	struct edt_fstab *table, swap;
++	uint32_t order[EDT_FSTAB_MAX], key;
++	OpaqueDTEntryIterator iterator;
++	DTEntry fstab, entry;
++	unsigned int count = 0, at;
++	void const *value;
++	unsigned int length;
++	bool ephemeral = false;
++	int error = 0;
++
++	if (req->newptr != USER_ADDR_NULL) {
++		return EPERM;
++	}
++	if (SecureDTLookupEntry(NULL, "/filesystems/fstab", &fstab) != kSuccess ||
++	    SecureDTInitEntryIterator(fstab, &iterator) != kSuccess) {
++		return ENOENT;
++	}
++	table = kalloc_data(sizeof(*table) * EDT_FSTAB_MAX, Z_WAITOK | Z_ZERO);
++	if (table == NULL) {
++		return ENOMEM;
++	}
++	while (SecureDTIterateEntries(&iterator, &entry) == kSuccess) {
++		struct edt_fstab *fs;
++
++		if (count == EDT_FSTAB_MAX) {
++			error = ENOMEM;
++			goto out;
++		}
++		fs = &table[count];
++		if (!edt_fstab_string(entry, "vol.fs_file", fs->fs_file, sizeof(fs->fs_file)) ||
++		    !edt_fstab_string(entry, "vol.fs_type", fs->fs_type, sizeof(fs->fs_type)) ||
++		    !edt_fstab_string(entry, "vol.fs_mntopts", fs->fs_mntops, sizeof(fs->fs_mntops))) {
++			error = EINVAL;
++			goto out;
++		}
++		fs->fs_passno = (int)edt_fstab_number(entry, "vol.fs_passno");
++		fs->fs_role = edt_fstab_number(entry, "vol.fs_role");
++		if (SecureDTGetProperty(entry, "vol.fs_ephemeral", &value, &length) == kSuccess) {
++			strlcpy(fs->fs_spec, "ramdisk", sizeof(fs->fs_spec));
++			strlcpy(fs->fs_vfstype, "tmpfs", sizeof(fs->fs_vfstype));
++			ephemeral = true;
++		} else if (fs->fs_role == EDT_ROLE_SYSTEM && rootvnode != NULLVP) {
++			struct vfsstatfs *root = vfs_statfs(rootvnode->v_mount);
++
++			strlcpy(fs->fs_spec, root->f_mntfromname, sizeof(fs->fs_spec));
++			strlcpy(fs->fs_vfstype, root->f_fstypename, sizeof(fs->fs_vfstype));
++		} else {
++			printf("edt_fstab: %s: no volume for role %#x\n", fs->fs_file, fs->fs_role);
++			bzero(fs, sizeof(*fs));
++			continue;
++		}
++		order[count++] = edt_fstab_number(entry, "vol.fs_mntorder");
++	}
++	/* Mount order, as the iOS kext returns them. */
++	for (at = 1; at < count; at++) {
++		for (unsigned int i = at; i > 0 && order[i - 1] > order[i]; i--) {
++			key = order[i];
++			order[i] = order[i - 1];
++			order[i - 1] = key;
++			swap = table[i];
++			table[i] = table[i - 1];
++			table[i - 1] = swap;
++		}
++	}
++	if (ephemeral && !edt_fstab_tmpfs_loaded) {
++		OSReturn result = OSKextLoadKextWithIdentifier(EDT_TMPFS_KEXT);
++
++		printf("edt_fstab: loading " EDT_TMPFS_KEXT " for the ephemeral Data volume: %#x\n", result);
++		edt_fstab_tmpfs_loaded = result == kOSReturnSuccess;
++	}
++	error = SYSCTL_OUT(req, table, count * sizeof(*table));
++out:
++	kfree_data(table, sizeof(*table) * EDT_FSTAB_MAX);
++	return error;
++}
++
++static struct sysctl_oid sysctl_edt_fstab_oid = {
++	.oid_parent = NULL,
++	.oid_number = OID_AUTO,
++	.oid_kind = CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_LOCKED | CTLFLAG_OID2,
++	.oid_name = "edt_fstab",
++	.oid_handler = sysctl_edt_fstab,
++	.oid_fmt = "S,edt_fstab",
++	.oid_descr = "Lookup fstab entries in EDT",
++	.oid_version = SYSCTL_OID_VERSION,
++};
++
++void vfs_edt_fstab_attach(struct sysctl_oid *oidp);
++
++/* Called by sysctl_register_oid for every OID a kext registers. */
++void
++vfs_edt_fstab_attach(struct sysctl_oid *oidp)
++{
++	if (oidp->oid_parent != &sysctl__vfs_generic_children ||
++	    (oidp->oid_kind & CTLTYPE) != CTLTYPE_NODE ||
++	    strcmp(oidp->oid_name, "apfs") != 0 ||
++	    sysctl_edt_fstab_oid.oid_parent != NULL) {
++		return;
++	}
++	sysctl_edt_fstab_oid.oid_parent = oidp->oid_arg1;
++	sysctl_register_oid(&sysctl_edt_fstab_oid);
++}
++#endif /* XNU_EDT_FSTAB */
++
+ /* Indicate that the root file system unmounted cleanly */
+ static int vfs_root_unmounted_cleanly = 0;
+ SYSCTL_INT(_vfs_generic, OID_AUTO, root_unmounted_cleanly, CTLFLAG_RD, &vfs_root_unmounted_cleanly, 0, "Root filesystem was unmounted cleanly");

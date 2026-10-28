@@ -1,0 +1,476 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index f319e87..4a68b6a 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -148,6 +148,7 @@ static struct {
+ 	uint32_t retries;                       /* ufsretries */
+ 	uint32_t syncsecs;                      /* ufssyncsecs */
+ 	bool dirty;                             /* writes completed since the last SYNCHRONIZE CACHE */
++	uint64_t lun_blocks;                    /* READ CAPACITY of su.lun, 4 KiB blocks (0: not read yet) */
+ } su;
+ 
+ /*
+@@ -172,6 +173,7 @@ static struct {
+ 	uint64_t verify_ok, verify_bad, verify_io_errors;
+ 	uint64_t syncer_runs, syncer_errors, ioctl_syncs, user_flushes;
+ 	uint64_t final_flushes, final_flush_skipped;
++	uint64_t nub_reads, nub_writes, nub_errors, nub_flushes;        /* sweet_ufs_lun_io/flush (IOMedia nub) */
+ 	uint32_t last_ocs, last_upiu, last_resp, last_status, last_sense;   /* last failed attempt */
+ 	uint32_t last_is, last_hcs;
+ 	uint32_t last_cdb;                      /* opcode of the last failed attempt */
+@@ -1027,6 +1029,141 @@ sweet_ufs_read_part(const char *name, uint64_t off, void *dst, uint64_t len)
+ 	return error;
+ }
+ 
++/*
++ * Whole-LUN access for the IOKit nub (iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp, boot-arg
++ * sweetiomedia=1, patch 2031): the LUN that holds the root partition becomes one IOBlockStorageDevice,
++ * so that IOStorageFamily publishes an IOMedia per GPT partition (/dev/disk0sN). Reads may touch the
++ * whole LUN; writes go through ufs_write_blocks_ex(), which refuses anything outside the root
++ * partition (and everything without ufsrw=1): nothing outside userdata can be written through this
++ * path either. Blocks are the device's 4 KiB blocks. Caller: thread context, may block.
++ */
++int sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *block_size, bool *writable);
++int sweet_ufs_lun_io(uint64_t block, uint32_t count, void *buf, bool write, bool fua);
++int sweet_ufs_lun_flush(void);
++
++/* READ CAPACITY(10), then (16) when the LUN has more than 2^32 blocks. Caller holds sweet_ufs_lock. */
++static int
++ufs_read_capacity(uint64_t *blocks)
++{
++	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
++	static const uint8_t cdb10[10] = { 0x25 };
++	int error = ufs_scsi(cdb10, sizeof(cdb10), 8, false);
++	if (error) {
++		return error;
++	}
++	uint64_t last = be32(b);
++	uint32_t bsize = be32(b + 4);
++	if (last == 0xffffffffu) {
++		uint8_t cdb16[16] = { 0x9e, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0 };
++		error = ufs_scsi(cdb16, sizeof(cdb16), 32, false);
++		if (error) {
++			return error;
++		}
++		last = (uint64_t)be32(b) << 32 | be32(b + 4);
++		bsize = be32(b + 8);
++	}
++	if (bsize != UFS_BLOCK || last == UINT64_MAX) {
++		printf("SWEET UFS: LUN %u: unexpected READ CAPACITY (last block 0x%llx, %u-byte blocks)\n",
++		    su.lun, last, bsize);
++		return EIO;
++	}
++	/* READ(10)/WRITE(10) address 32 bits: never hand out more than that. */
++	*blocks = MIN(last + 1, (uint64_t)UINT32_MAX + 1);
++	return 0;
++}
++
++int
++sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *block_size, bool *writable)
++{
++	int error = 0;
++	if (!su.ready) {
++		return ENXIO;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	if (su.lun_blocks == 0) {
++		error = ufs_read_capacity(&su.lun_blocks);
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	if (error) {
++		return error;
++	}
++	if (lun) {
++		*lun = su.lun;
++	}
++	if (blocks) {
++		*blocks = su.lun_blocks;
++	}
++	if (block_size) {
++		*block_size = UFS_BLOCK;
++	}
++	if (writable) {
++		*writable = su.writable;
++	}
++	return 0;
++}
++
++int
++sweet_ufs_lun_io(uint64_t block, uint32_t count, void *buf, bool write, bool fua)
++{
++	int error = 0;
++	if (!su.ready) {
++		return ENXIO;
++	}
++	if (count == 0) {
++		return 0;
++	}
++	if (block > UINT32_MAX || count > (uint64_t)UINT32_MAX + 1 - block) {
++		return EINVAL;
++	}
++	if (write && !su.writable) {
++		return EROFS;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	for (uint32_t done = 0; done < count && !error;) {
++		uint32_t n = MIN(count - done, BOUNCE_SIZE / UFS_BLOCK);
++		void *bounce = (void *)(su.dma + DMA_BOUNCE);
++		if (write) {
++			memcpy(bounce, (const uint8_t *)buf + (size_t)done * UFS_BLOCK, (size_t)n * UFS_BLOCK);
++			/* refuses (EPERM) anything outside the root partition: the only write path to the device */
++			error = ufs_write_blocks_ex(block + done, n, fua);
++		} else {
++			error = ufs_read_blocks(block + done, n);
++			if (!error) {
++				memcpy((uint8_t *)buf + (size_t)done * UFS_BLOCK, bounce, (size_t)n * UFS_BLOCK);
++			}
++		}
++		done += n;
++	}
++	if (error) {
++		ss.nub_errors++;
++	} else if (write) {
++		ss.nub_writes++;
++	} else {
++		ss.nub_reads++;
++	}
++	lck_mtx_unlock(&sweet_ufs_lock);
++	return error;
++}
++
++int
++sweet_ufs_lun_flush(void)
++{
++	if (!su.ready) {
++		return ENXIO;
++	}
++	if (!su.writable) {
++		return 0;
++	}
++	lck_mtx_lock(&sweet_ufs_lock);
++	int error = ufs_sync_cache();
++	ss.nub_flushes++;
++	lck_mtx_unlock(&sweet_ufs_lock);
++	return error;
++}
++
++/* iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp */
++extern void sweet_iomedia_publish(void);
++
+ static int
+ sweet_ufs_init(void)
+ {
+@@ -1151,6 +1288,8 @@ sweet_ufs_init(void)
+ 	sweet_ufs_syncer_start();
+ 	sweet_ufs_selftest_start();
+ 	sweet_sample_start();
++	/* boot-arg sweetiomedia=1: the LUN as an IOBlockStorageDevice (IOMedia, /dev/disk0sN); off by default */
++	sweet_iomedia_publish();
+ 	/*
+ 	 * The drivers below drive SM7150/SDM845 blocks at fixed physical addresses (SPMI, GENI,
+ 	 * GCC, TLMM, RPMh, DWC3, the A630, the WCN3990): never on another SoC.
+@@ -1653,6 +1792,10 @@ SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, ioctl_syncs, CTLFLAG_RD | CTLFLAG_LOCKED,
+ SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, user_flushes, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.user_flushes, "kern.sweet_ufs.flush requests");
+ SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, final_flushes, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.final_flushes, "SYNCHRONIZE CACHE before the SoC reset");
+ SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, final_flush_skipped, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.final_flush_skipped, "pre-reset flushes skipped (lock busy)");
++SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, nub_reads, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.nub_reads, "IOMedia nub reads (sweetiomedia=1)");
++SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, nub_writes, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.nub_writes, "IOMedia nub writes");
++SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, nub_errors, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.nub_errors, "IOMedia nub requests that failed");
++SYSCTL_QUAD(_kern_sweet_ufs, OID_AUTO, nub_flushes, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.nub_flushes, "IOMedia nub SYNCHRONIZE CACHE requests");
+ SYSCTL_UINT(_kern_sweet_ufs, OID_AUTO, last_cdb, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.last_cdb, 0, "opcode of the last failed attempt");
+ SYSCTL_UINT(_kern_sweet_ufs, OID_AUTO, last_ocs, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.last_ocs, 0, "UTRD overall command status of the last failed attempt (0xff: timeout)");
+ SYSCTL_UINT(_kern_sweet_ufs, OID_AUTO, last_status, CTLFLAG_RD | CTLFLAG_LOCKED, &ss.last_status, 0, "SCSI status of the last failed attempt");
+diff --git a/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp b/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp
+new file mode 100644
+index 0000000..1a7bcde
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp
+@@ -0,0 +1,279 @@
++/*
++ * SweetUfsBlockStorageDevice: the internal UFS LUN that holds the root partition as an
++ * IOBlockStorageDevice of IOStorageFamily (compiled into this kernel, iokit/Families/IOStorageFamily),
++ * so that IOBlockStorageDriver publishes an IOMedia for the whole LUN, IOGUIDPartitionScheme one per GPT
++ * partition and IOMediaBSDClient /dev/disk0 and /dev/disk0sN: what the APFS kext needs as a provider.
++ *
++ * Published from sweet_ufs_init() (bsd/dev/sweet_ufs.c, after the root partition is known) only with
++ * boot-arg sweetiomedia=1; off by default, so the existing rd=ufsroot0 (BSD bdev) boot is unchanged.
++ * All I/O goes through sweet_ufs_lun_io(): reads anywhere on the LUN, writes only inside the root
++ * partition (userdata) and only with ufsrw=1 (the UFS driver refuses the rest). Requests are served
++ * synchronously (the UFS driver is polled, one command at a time) and completed before returning,
++ * as the IOBlockStorageDevice contract allows.
++ *
++ * Shape after NativeVirtioBlock / NativeUfsBlock of UniXNU (github.com/none24smu/UniXNU,
++ * Copyright (c) 2026 UniXNU contributors, SPDX-License-Identifier: BSD-2-Clause-Patent).
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <device/device_types.h> /* io_buf_ptr_t for private OSKext headers */
++#include <IOKit/IOLib.h>
++#include <IOKit/IOLocks.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/storage/IOBlockStorageDevice.h>
++#include <IOKit/storage/IOStorageDeviceCharacteristics.h>
++#include <IOKit/storage/IOStorageProtocolCharacteristics.h>
++#include <libkern/c++/OSDictionary.h>
++#include <libkern/c++/OSString.h>
++#include <pexpert/pexpert.h>
++#include <sys/errno.h>
++
++/* bsd/dev/sweet_ufs.c */
++extern "C" int sweet_ufs_lun_info(uint8_t *lun, uint64_t *blocks, uint32_t *block_size, bool *writable);
++extern "C" int sweet_ufs_lun_io(uint64_t block, uint32_t count, void *buf, bool write, bool fua);
++extern "C" int sweet_ufs_lun_flush(void);
++extern "C" void sweet_iomedia_publish(void);
++
++class SweetUfsBlockStorageDevice : public IOBlockStorageDevice {
++	OSDeclareDefaultStructors(SweetUfsBlockStorageDevice);
++	/* one request at a time; the UFS driver serialises too, this keeps the bounce buffer private */
++	IOLock *gate = nullptr;
++	uint8_t *bounce = nullptr;
++	uint64_t blocks = 0;            /* LUN capacity in device blocks */
++	uint32_t blockSize = 0;         /* 4096 */
++	uint8_t lun = 0;
++	bool writable = false;          /* ufsrw=1; the UFS driver still limits writes to the root partition */
++	bool online = false;
++	char product[32] = {};
++	char info[96] = {};
++	static const uint32_t kBounceBytes = 256 * 1024;
++public:
++	bool configure(void);
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	void free(void) APPLE_KEXT_OVERRIDE;
++	IOReturn doEjectMedia(void) APPLE_KEXT_OVERRIDE { return kIOReturnUnsupported; }
++	IOReturn doFormatMedia(UInt64) APPLE_KEXT_OVERRIDE { return kIOReturnUnsupported; }
++	UInt32 doGetFormatCapacities(UInt64 *, UInt32) const APPLE_KEXT_OVERRIDE { return 0; }
++	char *getVendorString(void) APPLE_KEXT_OVERRIDE { return const_cast<char *>("SWEET"); }
++	char *getProductString(void) APPLE_KEXT_OVERRIDE { return product; }
++	char *getRevisionString(void) APPLE_KEXT_OVERRIDE { return const_cast<char *>("1.0"); }
++	char *getAdditionalDeviceInfoString(void) APPLE_KEXT_OVERRIDE { return info; }
++	IOReturn reportBlockSize(UInt64 *value) APPLE_KEXT_OVERRIDE { *value = blockSize; return kIOReturnSuccess; }
++	IOReturn reportEjectability(bool *value) APPLE_KEXT_OVERRIDE { *value = false; return kIOReturnSuccess; }
++	IOReturn reportMaxValidBlock(UInt64 *value) APPLE_KEXT_OVERRIDE { *value = blocks - 1; return kIOReturnSuccess; }
++	IOReturn reportMediaState(bool *present, bool *changed) APPLE_KEXT_OVERRIDE {
++		*present = online;
++		if (changed) {
++			*changed = false;
++		}
++		return kIOReturnSuccess;
++	}
++	IOReturn reportRemovability(bool *value) APPLE_KEXT_OVERRIDE { *value = false; return kIOReturnSuccess; }
++	IOReturn reportWriteProtection(bool *value) APPLE_KEXT_OVERRIDE { *value = !writable; return kIOReturnSuccess; }
++	IOReturn doSynchronizeCache(void) APPLE_KEXT_OVERRIDE;
++	IOReturn doSynchronize(UInt64 block, UInt64 nblks, IOStorageSynchronizeOptions options) APPLE_KEXT_OVERRIDE;
++	IOReturn getWriteCacheState(bool *value) APPLE_KEXT_OVERRIDE { *value = writable; return kIOReturnSuccess; }
++	IOReturn setWriteCacheState(bool) APPLE_KEXT_OVERRIDE { return kIOReturnUnsupported; }
++	IOReturn doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt64 nblks,
++	    IOStorageAttributes *attributes, IOStorageCompletion *completion) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetUfsBlockStorageDevice, IOBlockStorageDevice);
++
++bool
++SweetUfsBlockStorageDevice::configure(void)
++{
++	int error = sweet_ufs_lun_info(&lun, &blocks, &blockSize, &writable);
++	if (error || blocks == 0 || blockSize == 0) {
++		IOLog("SWEET IOMEDIA: no LUN geometry: %d\n", error);
++		return false;
++	}
++	gate = IOLockAlloc();
++	bounce = (uint8_t *)IOMallocData(kBounceBytes);
++	if (!gate || !bounce) {
++		return false;
++	}
++	snprintf(product, sizeof(product), "UFS LUN %u", lun);
++	snprintf(info, sizeof(info), "internal UFS over sweet_ufs, %llu MiB, %s",
++	    blocks * blockSize >> 20, writable ? "writes inside the root partition only" : "read-only");
++
++	/* Internal, non-removable storage for the clients that look at these (MobileStorageMounter, diskarbitrationd). */
++	OSDictionary *protocol = OSDictionary::withCapacity(2);
++	if (protocol) {
++		OSString *s = OSString::withCString(kIOPropertyPhysicalInterconnectTypeAppleFabric);
++		if (s) {
++			protocol->setObject(kIOPropertyPhysicalInterconnectTypeKey, s);
++			s->release();
++		}
++		s = OSString::withCString(kIOPropertyInternalKey);
++		if (s) {
++			protocol->setObject(kIOPropertyPhysicalInterconnectLocationKey, s);
++			s->release();
++		}
++		setProperty(kIOPropertyProtocolCharacteristicsKey, protocol);
++		protocol->release();
++	}
++	OSDictionary *device = OSDictionary::withCapacity(2);
++	if (device) {
++		OSString *s = OSString::withCString("SWEET");
++		if (s) {
++			device->setObject(kIOPropertyVendorNameKey, s);
++			s->release();
++		}
++		s = OSString::withCString(product);
++		if (s) {
++			device->setObject(kIOPropertyProductNameKey, s);
++			s->release();
++		}
++		s = OSString::withCString(kIOPropertyMediumTypeSolidStateKey);
++		if (s) {
++			device->setObject(kIOPropertyMediumTypeKey, s);
++			s->release();
++		}
++		setProperty(kIOPropertyDeviceCharacteristicsKey, device);
++		device->release();
++	}
++	return true;
++}
++
++bool
++SweetUfsBlockStorageDevice::start(IOService *provider)
++{
++	if (!gate || !bounce || !IOBlockStorageDevice::start(provider)) {
++		return false;
++	}
++	online = true;
++	registerService();
++	return true;
++}
++
++void
++SweetUfsBlockStorageDevice::free(void)
++{
++	if (bounce) {
++		IOFreeData(bounce, kBounceBytes);
++		bounce = nullptr;
++	}
++	if (gate) {
++		IOLockFree(gate);
++		gate = nullptr;
++	}
++	IOBlockStorageDevice::free();
++}
++
++IOReturn
++SweetUfsBlockStorageDevice::doSynchronizeCache(void)
++{
++	if (!online) {
++		return kIOReturnNotReady;
++	}
++	return sweet_ufs_lun_flush() ? kIOReturnIOError : kIOReturnSuccess;
++}
++
++IOReturn
++SweetUfsBlockStorageDevice::doSynchronize(UInt64 block, UInt64 nblks, IOStorageSynchronizeOptions options)
++{
++	(void)block;
++	(void)nblks;
++	(void)options;
++	return doSynchronizeCache();
++}
++
++IOReturn
++SweetUfsBlockStorageDevice::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt64 nblks,
++    IOStorageAttributes *attributes, IOStorageCompletion *completion)
++{
++	if (!buffer || !completion || !completion->action) {
++		return kIOReturnBadArgument;
++	}
++	if (nblks == 0 || block >= blocks || nblks > blocks - block || nblks > UINT64_MAX / blockSize ||
++	    buffer->getLength() < nblks * blockSize) {
++		return kIOReturnBadArgument;
++	}
++	IODirection direction = buffer->getDirection();
++	bool write;
++	if (direction == kIODirectionIn) {
++		write = false;
++	} else if (direction == kIODirectionOut) {
++		write = true;
++	} else {
++		return kIOReturnBadArgument;
++	}
++	if (write && !writable) {
++		return kIOReturnNotWritable;
++	}
++	bool fua = attributes && (attributes->options & kIOStorageOptionForceUnitAccess);
++	IOReturn result = kIOReturnNotReady;
++	uint64_t actual = 0, total = nblks * blockSize;
++
++	IOLockLock(gate);
++	while (online && actual < total) {
++		uint32_t bytes = (uint32_t)(total - actual < kBounceBytes ? total - actual : kBounceBytes);
++		uint32_t count = bytes / blockSize;
++		int error;
++		if (write) {
++			if (buffer->readBytes(actual, bounce, bytes) != bytes) {
++				result = kIOReturnVMError;
++				break;
++			}
++			error = sweet_ufs_lun_io(block + actual / blockSize, count, bounce, true, fua);
++		} else {
++			error = sweet_ufs_lun_io(block + actual / blockSize, count, bounce, false, false);
++		}
++		if (error) {
++			/* EPERM: a write outside the root partition, refused by the UFS driver */
++			result = (error == EPERM || error == EROFS) ? kIOReturnNotPermitted : kIOReturnIOError;
++			break;
++		}
++		if (!write && buffer->writeBytes(actual, bounce, bytes) != bytes) {
++			result = kIOReturnVMError;
++			break;
++		}
++		actual += bytes;
++	}
++	if (actual == total) {
++		result = kIOReturnSuccess;
++	}
++	IOLockUnlock(gate);
++	completion->action(completion->target, completion->parameter, result, actual);
++	return kIOReturnSuccess;
++}
++
++/*
++ * Called once from sweet_ufs_init() when the root partition is known (IOBSD is already published
++ * by then: bsd_autoconf runs before setconf/IOFindBSDRoot). The nub hangs under IOResources; the
++ * IOBlockStorageDriver / IOGUIDPartitionScheme / IOMediaBSDClient personalities of
++ * iokit/KernelConfigTables.cpp do the rest.
++ */
++extern "C" void
++sweet_iomedia_publish(void)
++{
++	uint32_t enable = 0;
++
++	PE_parse_boot_argn("sweetiomedia", &enable, sizeof(enable));
++	if (enable != 1) {
++		return;
++	}
++	IOService *resources = IOService::getResourceService();
++	if (!resources) {
++		IOLog("SWEET IOMEDIA: no IOResources\n");
++		return;
++	}
++	SweetUfsBlockStorageDevice *nub = new SweetUfsBlockStorageDevice;
++	if (!nub) {
++		return;
++	}
++	if (!nub->init(NULL) || !nub->configure() || !nub->attach(resources)) {
++		IOLog("SWEET IOMEDIA: nub init/attach failed\n");
++		nub->release();
++		return;
++	}
++	if (!nub->start(resources)) {
++		IOLog("SWEET IOMEDIA: nub start failed\n");
++		nub->detach(resources);
++		nub->release();
++		return;
++	}
++	IOLog("SWEET IOMEDIA: %s published (IOBlockStorageDevice under IOResources)\n", nub->getAdditionalDeviceInfoString());
++	nub->release();
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index 31cb0ef..d24681b 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -22,3 +22,4 @@ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitc
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp             optional iokitcpp
+ iokit/Kernel/arm/SweetBusy.cpp                                   optional iokitcpp
++iokit/Kernel/arm/SweetUfsBlockStorageDevice.cpp                  optional iokitcpp

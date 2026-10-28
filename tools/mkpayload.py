@@ -37,6 +37,9 @@ import adt  # noqa: E402
 
 LC_SEGMENT_64, LC_UNIXTHREAD, LC_DYLD_CHAINED_FIXUPS = 0x19, 0x5, 0x80000034
 PAGE = 0x4000
+# struct payload in the loaders (ios-sweet shim/loader.c, asteroids/shim/loader.c: MAX_SEGS); a kernel with the
+# zeta-style prelink segments filled has 16 non-empty segments, a ramdisk adds one
+SHIM_MAX_SEGS = 24
 BOOT_LINE_LENGTH = 608
 CMDLINE = 0x48
 SEG_TABLE = CMDLINE + BOOT_LINE_LENGTH	# 0x2a8
@@ -70,7 +73,7 @@ def apply_chained_fixups(buf, m):
     data_off, _ = m['fixups']
     _, starts_off, _, _, imports_count, _, _ = struct.unpack_from('<7I', buf, data_off)
     assert imports_count == 0, 'kernel has binds; only rebases are supported'
-    image_base = m['segs'][0]['vmaddr']		# __TEXT, holds the mach header
+    image_base = next(s for s in m['segs'] if s['name'] == '__TEXT')['vmaddr']	# holds the mach header
     seg_count, = struct.unpack_from('<I', buf, data_off + starts_off)
     nfix = 0
     for i in range(seg_count):
@@ -183,11 +186,22 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
     segs = [s for s in m['segs'] if s['vmsize']]
-    text = m['segs'][0]
-    assert text['name'] == '__TEXT' and text['fileoff'] == 0
+    text = next(s for s in m['segs'] if s['name'] == '__TEXT')
+    assert text['fileoff'] == 0, '__TEXT must hold the mach header'
     # virt_base: 32MB (16K-granule L2 block) below the mach header, so start.s's
     # block mapping that starts at the header's block begins exactly at phys_base.
     virt_base = text['vmaddr'] & ~(0x2000000 - 1)
+    # A prelinked kext set (tools/apfs/emit-zeta-apfs-prelink.py) fills __PRELINK_TEXT, __PLK_TEXT_EXEC and
+    # __PLK_DATA_CONST directly below __TEXT (the kernel reserves 48 MiB there, xnu maps them in
+    # arm_vm_init: segLOWESTTEXT); the loader copies them like any other segment, so they only have to stay
+    # inside the block that start.s maps, i.e. at or above virt_base (16 MiB + 16 KiB below __TEXT).
+    lowest = min(s['vmaddr'] for s in segs)
+    if lowest < virt_base:
+        raise SystemExit('segments below virt_base %#x (lowest %#x): more than %d MiB below __TEXT, start.s would '
+                         'not map them' % (virt_base, lowest, (text['vmaddr'] - virt_base) >> 20))
+    if len(segs) + (1 if ramdisk_path else 0) > SHIM_MAX_SEGS:
+        raise SystemExit('%d segments: more than the loaders\' MAX_SEGS (%d)' % (len(segs), SHIM_MAX_SEGS))
+    prelink = [s for s in segs if s['name'].startswith(('__PRELINK', '__PLK'))]
     kernel_end = max(s['vmaddr'] + s['vmsize'] for s in segs)
     kernel_end = (kernel_end + PAGE - 1) & ~(PAGE - 1)
 
@@ -236,6 +250,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, compress=False, img
         struct.pack_into('<5Q' if compress else '<4Q', out, SEG_TABLE + stride * i, *t)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
                 entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
+                prelink=('%d segments, %d KiB below __TEXT' % (len(prelink), (text['vmaddr'] - lowest) >> 10)
+                         if prelink else None),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
     return bytes(out), info
 

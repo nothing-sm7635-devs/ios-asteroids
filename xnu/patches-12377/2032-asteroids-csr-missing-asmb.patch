@@ -1,0 +1,14 @@
+diff --git a/bsd/kern/kern_csr.c b/bsd/kern/kern_csr.c
+index 604f16a..e79bd5d 100644
+--- a/bsd/kern/kern_csr.c
++++ b/bsd/kern/kern_csr.c
+@@ -221,7 +221,8 @@ csr_bootstrap(void)
+ 
+ 	// The CSR_ALLOW_UNAUTHENTICATED_ROOT flag must be synthesized from sip1
+ 	// in the local boot policy.
+-	if (_csr_get_dt_bool(&entry, "lp-sip1", &bool_value) && bool_value) {
++	if (SecureDTLookupEntry(0, "/chosen/asmb", &entry) == kSuccess &&
++	    _csr_get_dt_bool(&entry, "lp-sip1", &bool_value) && bool_value) {
+ 		csr_config |= CSR_ALLOW_UNAUTHENTICATED_ROOT;
+ 	} else {
+ 		csr_config &= ~CSR_ALLOW_UNAUTHENTICATED_ROOT;

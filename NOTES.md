@@ -376,6 +376,51 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **APFS kernel step 1 LANDED (2026-10-28 ~20:30Z, kernel patches 2030-2033, local checks only, NOT built on CI, NOT
+  booted; the Bergamota commit holds the patches + tools/mkpayload.py + this entry; nothing pushed).**
+  - **2030 IOStorageFamily 337.100.1 in the kernel** (= KDK 25F84's IOStorageFamily.kext, version.plist SourceVersion
+    337100001000000, verified; research/ios26/apfs-src/IOStorageFamily is that tag): `iokit/Families/IOStorageFamily/*.cpp`
+    (11 files, no IOUserBlockStorageDevice/IORequest = zeta's `-DIOSTORAGE_NATIVE_ONLY=1`, same two edits in
+    IOBlockStorageDriver.cpp), headers `iokit/IOKit/storage/` (exported: EXPINC subdir), `config/IOKit.exports` + the 714
+    symbols the KDK kext exports (all defined by our objects, 0 collisions with the ast17 kernel's globals, every import of
+    the family resolves in the kernel), personalities IOBlockStorageDriver / IOGUIDPartitionScheme / IOMediaBSDClient
+    (SWEET only). The build enters through iokit/conf/files (+ `CFLAGS+= -DIOSTORAGE_NATIVE_ONLY=1` in Makefile.template).
+  - **2031 SweetUfsBlockStorageDevice** (`iokit/Kernel/arm/`): the root LUN as an IOBlockStorageDevice under IOResources,
+    published from sweet_ufs_init() **only with boot-arg `sweetiomedia=1`** (default off: rd=ufsroot0 unchanged).
+    sweet_ufs.c gained `sweet_ufs_lun_info` (READ CAPACITY 10/16, 4 KiB blocks), `sweet_ufs_lun_io`, `sweet_ufs_lun_flush`:
+    reads anywhere on the LUN, writes through ufs_write_blocks_ex (still refuses anything outside the root partition and
+    everything without ufsrw=1; counters kern.sweet_ufs.nub_*). Expected result: IOMedia "UFS LUN 0 Media" (Whole) ->
+    IOGUIDPartitionScheme -> one IOMedia per GPT partition -> /dev/disk0, /dev/disk0sN (userdata = the HFS+ root's partition).
+  - **2032 csr /chosen/asmb** and **2033 edt_fstab** = zeta's native-csr-missing-asmb / native-edt-fstab, applied clean
+    (2033: XNU_EDT_FSTAB defined for ARM64_BOARD_CONFIG_SWEET; inert until a kext registers vfs.generic.apfs).
+  - **Checked (observed):** every new/changed TU syntax-checks with Ubuntu clang 18 against the 12377 headers and the CI
+    compile flags (SDKROOT=macosx, -mkernel -fapple-kext, no exceptions/RTTI): view+wrapper in the session scratchpad
+    (`mkview.sh` symlinks osfmk/bsd/libkern/... as EXPORT_HDRS, borrows 8796 MIG/iig outputs and meta_features.h from
+    ~/os/ios/hackios-xnu-kernel, stubs `__builtin_xnu_type_*`, `__builtin_clzg/ctzg`, TrustCache/API.h); the family
+    also compiles to arm64 Mach-O objects there. Series check: worktree at bf19d49 + all 20*.patch == HEAD (cdbbd84).
+  - **Residual CI risks (inferred):** (a) `-nostdlibinc` + the family's `<TargetConditionals.h>`/`<AssertMacros.h>`:
+    OSMetaClass.h includes the former and EXTERNAL_HEADERS has the latter, so both should resolve as today; (b) Apple
+    clang warnings-as-errors: CI builds with BUILD_WERROR=0; (c) kextsymboltool for IOKit.symbolset needs every exported
+    name in the kernel (all 714 are global in our objects); (d) `iokit/IOKit/storage/Makefile` copies rtc's (INSTALL_KF
+    list default). If the link fails on a family symbol, read link-errors.txt first.
+  - **Step 3 (prelink payload) RESEARCHED, loader side done:** the zeta emitter fills the kernel's existing empty
+    __PRELINK_TEXT/__PLK_TEXT_EXEC/__PLK_DATA_CONST (placed directly below __TEXT; our kernel reserves 48 MiB there,
+    __PRELINK_TEXT va 0xfffffe0004004000) and __PRELINK_DATA/__PLK_LINKEDIT/__PRELINK_INFO after __LINKEDIT, without
+    changing load-command order; xnu maps them (arm_vm_init segLOWESTTEXT). Our kernel has no chained fixups.
+    `tools/mkpayload.py` now finds __TEXT by name, refuses a segment below virt_base (= __TEXT & ~32 MiB: start.s maps
+    from that block, so at most 16 MiB + 16 KiB of read-only kext segments fit below __TEXT; zeta's apfs closure is
+    ~3.1 MiB), enforces SHIM_MAX_SEGS = 24 and prints `prelink:`; output for the ast17 kernel is byte-identical to before
+    (sha e35be328...). ios-sweet shim `asteroids/shim/loader.c` MAX_SEGS 16 -> 24 (acd1bda; a filled prelink has 16
+    non-empty segments, +1 ramdisk). Still missing for a prelinked boot: corecrypto from source (crypto KPIs, ML-DSA), the
+    emitter's metadata entry for com.apple.iokit.IOStorageFamily (it declares the family as a kernel component, see
+    zeta_prelink_metadata.py:93), run-audit.sh against the 2030 kernel (expect the 75 API + 73 reserved-slot misses gone).
+  - **NEXT BOOT (zero risk by default):** CI run of this series -> boot image with the usual args (no behaviour change);
+    then a second image with `sweetiomedia=1` added: expect `SWEET IOMEDIA: internal UFS over sweet_ufs, N MiB, ...
+    published`, then IORegistry IOBlockStorageDriver / "UFS LUN 0 Media" / IOGUIDPartitionScheme / per-partition IOMedia
+    and /dev/disk0, /dev/disk0s1.. (ls /dev/disk*, ioreg -c IOMedia), `sysctl kern.sweet_ufs` nub_reads > 0 (GPT read).
+    Failure modes to look for: panic in IOBlockStorageDriver::start (perf control client), no IOMedia (matching: check
+    `ioreg -c IOBlockStorageDevice`), `SWEET UFS: LUN 0: unexpected READ CAPACITY`. rd=ufsroot0 stays the root either way.
+
 * **Round 2 fixes landed (2026-10-28 19:40Z, kernel 2023 + root; CI not yet pushed, waiting for the APFS step-1 patches):**
   kernel 2023 `sweet_fsctl_fallback` (vfs_syscalls.c): on a non-APFS mount FSIOC_CAS_BSDFLAGS is done with getattr/setattr
   (libcopyfile sends it on every attribute copy, HFS+ said ENOTTY) and APFS 'J' commands that only set state, plus

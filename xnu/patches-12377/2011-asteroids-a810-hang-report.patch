@@ -1,0 +1,67 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index a0ed691..1b54353 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2967,7 +2967,7 @@ sweet_gpu_report(const char *why)
+ {
+ 	if (sweet_board_asteroids()) {
+ 		printf("SWEET GPU: A810 %s: ready %d, last fence %u\n", why, sweet_a810_msm_ready(), sweet_a810_msm_fence_last());
+-		sweet_log_sync();
++		sweet_a810_hang_report(why);
+ 		return;
+ 	}
+ 	uint32_t w[DBG_N];
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index e21f4b5..0e88cc0 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1495,6 +1495,36 @@ sweet_a810_fence_passed(uint32_t seqno)
+ 	return (int32_t)(a810_ring_observed(&a810_ring) - seqno) >= 0;
+ }
+ 
++/* A user submission did not come back (SweetAdreno's wait, sweet_gpu_report): the CP state, the ring's accounting, the CP
++ * protect/RL error words and the ring dwords around the CP's read pointer, so a hang names the packet it stopped on. */
++void
++sweet_a810_hang_report(const char *why)
++{
++	uint32_t prot = 0, rl0 = 0, rl1 = 0;
++	if (!a810_cp_started) {
++		return;
++	}
++	lck_mtx_lock(&a810_lck);
++	a810_cp_state(why);
++	a810_reg_read(NULL, A810_CP_PROTECT_STATUS_PIPE, &prot);
++	a810_reg_read(NULL, A810_CP_RL_ERROR_DETAILS_0, &rl0);
++	a810_reg_read(NULL, A810_CP_RL_ERROR_DETAILS_1, &rl1);
++	A810_LOG("SWEET A810: %s: ring seqno %u completed %u observed %u submissions %u next %u, protect %#x rl_error %#x %#x\n",
++	    why, a810_ring.seqno, a810_ring.completed, a810_ring_observed(&a810_ring), a810_ring.submissions, a810_ring.next,
++	    prot, rl0, rl1);
++	if (a810_ring.ring != NULL && a810_ring.ring_bytes >= 64) {
++		uint32_t n = (uint32_t)(a810_ring.ring_bytes / 4), rptr = a810_ring.fence ? a810_ring.fence[0] % n : 0;
++		for (uint32_t row = 0; row < 6; row++) {
++			uint32_t at = (rptr + n - 24 + row * 8) % n;
++			const volatile uint32_t *r = a810_ring.ring;
++			A810_LOG("SWEET A810: %s: ring[%#x] %08x %08x %08x %08x %08x %08x %08x %08x\n", why, at, r[at], r[(at + 1) % n],
++			    r[(at + 2) % n], r[(at + 3) % n], r[(at + 4) % n], r[(at + 5) % n], r[(at + 6) % n], r[(at + 7) % n]);
++		}
++	}
++	lck_mtx_unlock(&a810_lck);
++	sweet_log_sync();
++}
++
+ /* The GMU always-on counter (19.2 MHz), msm's MSM_PARAM_TIMESTAMP (a6xx_gmu_get_timestamp reads the same pair). */
+ bool
+ sweet_a810_timestamp(uint64_t *value)
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index 9df123e..d20b4e8 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -45,6 +45,8 @@ int sweet_a810_vm_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot)
+ int sweet_a810_vm_unmap(uint64_t iova, uint64_t bytes);
+ /* The GMU always-on counter (19.2 MHz); false when the GPU is not up. */
+ bool sweet_a810_timestamp(uint64_t *value);
++/* CP state, ring accounting and the ring around the CP read pointer, for a submission that did not come back. */
++void sweet_a810_hang_report(const char *why);
+ 
+ /* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
+ bool sweet_a810_msm_ready(void);

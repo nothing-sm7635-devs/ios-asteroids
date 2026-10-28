@@ -158,6 +158,15 @@
     appears; links IOKit. `renegade update` now installs Chlorophyll too when RENEGADE_CHLOROPHYLL is set. NEXT: rebuilt
     chl-work/out-metal/bgl-launch -> `renegade update research/ios26/ios26-root-full.simg` (or a full root) -> flash userdata
     (user) -> boot ast8 -> /private/var/tmp/bgl-backboardd.log + bgmtl.log for the Metal outcome.
+  * ast8-60 (60 Hz, root with the waiting bgl-launch, 2026-10-28): STILL NO GPU on screen, but Chlorophyll RAN: bgl-launch saw
+    SweetAdreno630 after 19000 ms, backboardd[64] opened "Adreno (TM) 810", compiled QuartzCore's shaders (first pipeline 32 s),
+    completed command buffers, became "healthy", then fence 16 never came back: kernel "A810 wait timed out" (5 s) -> "LOST"
+    -> inject wrote bgmtl-bb.off and exited -> plain backboardd[342] died on the push_surface assertion. Logs: logs/ast8-60
+    (kernel) and logs/ast8-60-var (iOS /private/var/tmp files, read with the new tools/sweet-hfs-pull.py: HFS+ reader over
+    `adb exec-out dd` from recovery, read only). Also: KonaSynthesizer/MauiAUSP/MacinTalkAUSP/SiriAUSP crash 17x each.
+    Changes for the next try: kernel 2011 (sweet_a810_hang_report: CP state, SMMU fault, ring accounting, protect/RL error,
+    ring dwords around RPTR on a timed-out wait); bgl-launch sets TU_DEBUG=sysmem by default (bgmtl-bb.tudebug overrides,
+    empty = none: first suspect is GMEM/binning); root_tweaks18.audio moves the four speech extensions aside.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

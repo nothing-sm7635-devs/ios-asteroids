@@ -564,6 +564,9 @@ def activation(root):
     print('data ark', d)
 
 
+SPEECH_EXTENSIONS = ('KonaSynthesizer.appex', 'MauiAUSP.appex', 'MacinTalkAUSP.appex', 'SiriAUSP.appex')
+
+
 def audio(root):
     src = os.path.join(root, 'Library/Audio/Plug-Ins/HAL/VirtualAudio.plugin')
     dst_dir = os.path.join(root, 'Library/Audio/Plug-Ins/HAL.disabled')
@@ -571,6 +574,15 @@ def audio(root):
         os.makedirs(dst_dir, exist_ok=True)
         shutil.move(src, dst_dir)
         print('VirtualAudio.plugin disabled')
+    # the speech synthesizer extensions abort at launch and are relaunched all boot long (ast8-60, 2026-10-28: 17 crashes each,
+    # every one a ReportCrash run and a corpse): moved aside like VirtualAudio
+    ext = os.path.join(root, 'System/Library/ExtensionKit/Extensions')
+    for name in SPEECH_EXTENSIONS:
+        src = os.path.join(ext, name)
+        if os.path.exists(src):
+            os.makedirs(ext + '.disabled', exist_ok=True)
+            shutil.move(src, ext + '.disabled')
+            print(name, 'disabled')
     for conf in glob.glob(os.path.join(root, 'System/Library/Frameworks/MediaToolbox.framework/*/SubServerConfiguration.plist')):
         st = os.stat(conf)
         data = load(conf)

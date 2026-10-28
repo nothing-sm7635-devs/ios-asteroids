@@ -33,7 +33,9 @@
  * BGMTL_SKIP_COMPUTE (Chlorophyll drops those compute dispatches): the first line of bgmtl-bb.skipcompute (empty: none), default
  * "compute_average_luma,compute_sum_luma": the GPU hung right after backboardd's first luma dispatches in ast9 and ast10, with
  * sysmem and with sysmem,flushall (flushall did not help and is not the default any more).
- * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem". The first Metal backboardd
+ * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem,noubwc" (noubwc since ast14:
+ * both decoded hang dumps were render passes with UBWC-compressed targets and blits, the second one after the macrotile
+ * fix). The first Metal backboardd
  * (ast8-60, 2026-10-28) drew for a while, then a submission never came back (GPU lost); GMEM/binning on the A810 runs on
  * hand-set GMEM parameters, so sysmem rendering is the first suspect ruled out.
  */
@@ -232,7 +234,7 @@ static void clean_legibility_pools(void)
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
 #define BB_WAIT   "/private/var/tmp/bgmtl-bb.wait"
 #define BB_TUDEBUG "/private/var/tmp/bgmtl-bb.tudebug"
-#define BB_TUDEBUG_DEFAULT "sysmem"
+#define BB_TUDEBUG_DEFAULT "sysmem,noubwc"
 #define BB_SKIPCOMPUTE "/private/var/tmp/bgmtl-bb.skipcompute"
 #define BB_SKIPCOMPUTE_DEFAULT "compute_average_luma,compute_sum_luma"
 #define BB_GPU_WAIT 90

@@ -132,6 +132,6 @@ cp -f "$D/drm-ios/libdrm.2.arm64.dylib" libdrm.2.dylib
 "$CC" "${OBJC[@]}" -c "$WORK/Chlorophyll/inject/bgmtl_inject.m" -o bgmtl_inject.o
 "$CC" -dynamiclib -o bgmtl-inject.dylib bgmtl.o bgmtl_inject.o libchlorophyll.dylib libdrm.2.dylib -framework Foundation -framework Metal \
 	-framework IOSurface -install_name /usr/local/lib/bgmtl/bgmtl-inject.dylib -Wl,-rpath,@loader_path
-"$CC" -O2 -Wall "$HERE/gpu/eagl/launch/bgl-launch.c" -o bgl-launch
+"$CC" -O2 -Wall "$HERE/gpu/eagl/launch/bgl-launch.c" -o bgl-launch -framework IOKit -framework CoreFoundation
 for f in libchlorophyll.dylib libdrm.2.dylib bgmtl-inject.dylib bgl-launch; do "$WORK/bin/ios-ldid" -S "$f"; done
 ls -l libchlorophyll.dylib libdrm.2.dylib bgmtl-inject.dylib bgl-launch

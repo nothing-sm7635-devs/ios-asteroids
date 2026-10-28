@@ -16,7 +16,7 @@ SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 TMP="$WORK/payload-build"
 rm -rf "$TMP" "$OUT"; mkdir -p "$TMP" "$OUT/OpenGLES.framework"
 EAGL_DEFS=-DEAGL_INJECT MESA_BLD="$WORK/build-hw" "$HERE/build.sh" "$TMP/inj" >/dev/null
-xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=18.0 -isysroot "$SDK" -O2 -Wall -Wextra "$HERE/launch/bgl-launch.c" -o "$TMP/bgl-launch"
+xcrun --sdk iphoneos clang -arch arm64e -miphoneos-version-min=18.0 -isysroot "$SDK" -O2 -Wall -Wextra "$HERE/launch/bgl-launch.c" -o "$TMP/bgl-launch" -framework IOKit -framework CoreFoundation
 cp "$TMP/bgl-launch" "$OUT/bgl-launch"
 cp "$TMP/inj/OpenGLES.framework/OpenGLES" "$OUT/OpenGLES.framework/OpenGLES"
 cp "$TMP/inj/libOSMesa.8.dylib" "$TMP/inj/libdrm.2.dylib" "$OUT/"

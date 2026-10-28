@@ -26,6 +26,10 @@
  * /usr/local/lib/bgmtl, and the previous Metal launch of THIS boot became healthy (bgmtl-bb.state; one that did not writes
  * bgmtl-bb.off here). Then backboardd gets the Chlorophyll inject instead of the GL shim, BGMTL_BB=1, and bgmtl-bb.state says
  * alive=0 until the inject marks it healthy. Any doubt: the ES path below, as before.
+ * The kernel publishes the GPU (SweetAdreno630) only after its bring-up, 10-20 s after launchd first starts backboardd (ast8,
+ * 2026-10-28): a Metal launch first waits for the service (BB_GPU_WAIT s, or the number in bgmtl-bb.wait). Without it the inject
+ * ran stock, its alive=0 switched Metal off at the next start and the rest of the boot had CoreAnimation's CPU renderer. A GPU that
+ * never appears writes bgmtl-bb.off (the next starts do not wait again) and this start runs plain.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -38,6 +42,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <IOKit/IOKitLib.h>
 
 #ifndef BGL_REAL_PATH
 #define BGL_REAL_PATH "/usr/libexec/backboardd"
@@ -219,11 +224,42 @@ static void clean_legibility_pools(void)
 #define BB_OFF    "/private/var/tmp/bgmtl-bb.off"
 #define BB_STATE  "/private/var/tmp/bgmtl-bb.state"
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
+#define BB_WAIT   "/private/var/tmp/bgmtl-bb.wait"
+#define BB_GPU_WAIT 90
+#define GPU_SERVICE "SweetAdreno630"   /* SWEET_GPU_SERVICE_NAME, xnu/gpu-abi/sweet_adreno_abi.h */
+
+static char g_wait_msg[160];
 
 static void bb_off(const char *why)
 {
 	FILE *f = fopen(BB_OFF, "w");
 	if (f) { fprintf(f, "%s\n", why); fclose(f); }
+}
+
+/* 1 once the kernel published the GPU; 0 after the wait (and bgmtl-bb.off: later starts of this boot do not wait again) */
+static int gpu_wait(void)
+{
+	int secs = BB_GPU_WAIT, ms = 0;
+	FILE *f = fopen(BB_WAIT, "r");
+	if (f) {
+		if (fscanf(f, "%d", &secs) != 1 || secs < 0)
+			secs = BB_GPU_WAIT;
+		fclose(f);
+	}
+	for (;; ms += 250) {
+		io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(GPU_SERVICE));
+		if (svc) {
+			IOObjectRelease(svc);
+			snprintf(g_wait_msg, sizeof g_wait_msg, "bgl-launch: %s published after %d ms\n", GPU_SERVICE, ms);
+			return 1;
+		}
+		if (ms >= secs * 1000)
+			break;
+		usleep(250000);
+	}
+	snprintf(g_wait_msg, sizeof g_wait_msg, "%s not published within %d s", GPU_SERVICE, secs);
+	bb_off(g_wait_msg);
+	return 0;
 }
 
 /* 1: start backboardd on Chlorophyll (Metal); 0: the ES path */
@@ -250,6 +286,8 @@ static int metal_mode(void)
 		bb_off("the previous Metal launch of this boot never became healthy");
 		return 0;
 	}
+	if (!gpu_wait())
+		return 0;
 	f = fopen(BB_STATE, "w");
 	if (f) { fprintf(f, "alive=0 boot=%s\n", boot[0] ? boot : "-"); fclose(f); }
 	return 1;
@@ -285,6 +323,7 @@ int main(int argc, char **argv)
 		if (fd >= 0) {
 			dup2(fd, 2);
 			close(fd);
+			fputs(g_wait_msg, stderr);
 			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll)\n", BB_LIBDIR);
 		}
 		argv[0] = (char *)REAL_PATH;

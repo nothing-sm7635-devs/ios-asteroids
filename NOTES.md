@@ -149,6 +149,15 @@
   * CI 40589887346 (b831fb8, 2000-2010) SUCCESS -> research/ios26/kernel-ast8. The user rebuilt the root (2026-10-28,
     presumably with RENEGADE_CHLOROPHYLL) and flashed userdata themselves. Images ios26-ast8 (sweeta810=16: GPU user client
     published after stage 16) and ios26-ast8-nogpu (sweeta810=4: bgl-launch falls back to plain backboardd).
+  * ast8 boot (logs/ast8, 2026-10-28; root built with RENEGADE_CHLOROPHYLL): bar drew, smoother, lock screen; recents do not
+    work, Settings freezes, no wallpaper/widgets/-1 screen (black). Cause (log): backboardd[64] started with the inject but the
+    kernel published SweetAdreno630 10-20 s LATER (A810 stage 16 runs after backboardd starts), so bb_init saw GPU state != 1 and
+    ran stock; it crashed (sig 6), and bgl-launch then saw the state alive=0 and wrote bgmtl-bb.off: backboardd[390] and [560]
+    ran plain on the CPU renderer ([390] died on the ogl-context.cpp push_surface assertion). Metal never drew.
+    Fix: bgl-launch waits up to 90 s (bgmtl-bb.wait) for SweetAdreno630 before a Metal launch, writes bgmtl-bb.off if it never
+    appears; links IOKit. `renegade update` now installs Chlorophyll too when RENEGADE_CHLOROPHYLL is set. NEXT: rebuilt
+    chl-work/out-metal/bgl-launch -> `renegade update research/ios26/ios26-root-full.simg` (or a full root) -> flash userdata
+    (user) -> boot ast8 -> /private/var/tmp/bgl-backboardd.log + bgmtl.log for the Metal outcome.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

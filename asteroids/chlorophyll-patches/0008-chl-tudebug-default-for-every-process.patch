@@ -30,7 +30,7 @@
           fclose(f);
        }
 +      if (!from_file)
-+         setenv("TU_DEBUG", "sysmem,noubwc,nocb,nolrz", 1);
++         setenv("TU_DEBUG", "noubwc,nocb,nolrz", 1);
     }
  
     d->vk.vkCreateInstance = (PFN_vkCreateInstance)vk_icdGetInstanceProcAddr(NULL, "vkCreateInstance");

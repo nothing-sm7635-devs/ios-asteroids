@@ -33,7 +33,9 @@
  * BGMTL_SKIP_COMPUTE (Chlorophyll drops those compute dispatches): the first line of bgmtl-bb.skipcompute (empty: none), default
  * "compute_average_luma,compute_sum_luma": the GPU hung right after backboardd's first luma dispatches in ast9 and ast10, with
  * sysmem and with sysmem,flushall (flushall did not help and is not the default any more).
- * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem,noubwc" (noubwc since ast14:
+ * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "noubwc,nocb,nolrz" since ast22
+ * (sysmem dropped: every pass in system memory made frames slow enough for the display to copy them half drawn, 250 x 50 ms
+ * waits a boot; UniXNU-asteroids runs the A810 with nocb alone). Before: "sysmem,noubwc" (noubwc since ast14:
  * both decoded hang dumps were render passes with UBWC-compressed targets and blits, the second one after the macrotile
  * fix). The first Metal backboardd
  * (ast8-60, 2026-10-28) drew for a while, then a submission never came back (GPU lost); GMEM/binning on the A810 runs on
@@ -239,7 +241,7 @@ static void clean_legibility_pools(void)
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
 #define BB_WAIT   "bgmtl-bb.wait"
 #define BB_TUDEBUG "bgmtl-bb.tudebug"
-#define BB_TUDEBUG_DEFAULT "sysmem,noubwc,nocb,nolrz"
+#define BB_TUDEBUG_DEFAULT "noubwc,nocb,nolrz"
 #define BB_SKIPCOMPUTE "bgmtl-bb.skipcompute"
 #define BB_TEXPOOL "bgmtl-bb.texpool"
 #define BB_TEXPOOL_DEFAULT "0"

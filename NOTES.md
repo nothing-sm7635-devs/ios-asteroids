@@ -376,6 +376,16 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **Torn UI, dive (2026-10-29 03:xxZ):** two mechanisms. (a) The display's copy path (SweetFramebuffer gpuGateOpen) waits
+  for the GPU fence of the pending swap only 50 ms, then copies the frame unfinished; ~250 submissions a boot exceed 50 ms
+  (the "stalled fence" kick count is the same threshold), and the slow frames are the full-screen system-memory passes:
+  we force `sysmem` while UniXNU-asteroids runs the same A810 with `nocb` alone (their T53: sysmem passes = 60 % of GPU
+  time). Changes: Turnip default `noubwc,nocb,nolrz` (bgl-launch + 0008), kernel 2042 `sweetfb_gpuhold` 100 ms default.
+  (b) Persistent torn icons = targets written back after a RECOVERY voided their fences (half drawn, never redrawn):
+  needs the hang fixed; the hang is a pipeline that never idles after a draw (6 per boot), still unidentified. Mesa 26.2.5
+  classifies the 810 as CHIP.A8XX (a7xx_base + a7xx_gen3 + a8xx_base + a8xx_gen1 props, num_ccu 1, tile 32x16); our stage
+  13 hw_init already uses NativeAdreno's A810 register list. Also reviewed: BO pages never lost WC in ast19/21 (0 lines).
+
 * **SETTINGS FREEZE EXPLAINED (ast21, sweetkill crash report 2026-10-29 02:10Z):** Preferences waits in `_WifiStateChanged ->
   _SCNetworkInterfaceCopyAllWithPreferences -> dispatch_once -> SCDynamicStoreNotifyWait`: configd's InterfaceNamer never
   publishes Plugin:InterfaceNamer *QUIET* (that needs an IONetworkStack user client; this kernel has none), the wait ends

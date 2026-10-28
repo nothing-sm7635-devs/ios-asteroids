@@ -336,6 +336,29 @@
     candidate. Ruled out: csops ERANGE (stock two-step length query). sweetsyserr was eaten by containermanagerd
     again (854): new image ios26-ast16-diag2 traces PosterBoard, the poster extensions, sweetposterset, Safari,
     Settings, chronod, WidgetRenderer only. First boot's poster step failed (rc=1) and reruns at the next boot.
+  * Reference sweep (2026-10-28; clones in ~/os/ios/ext/ref): rootstockos UniXNU-asteroids/UniXNU-rs/NativeAdreno/NativeUfs/
+    GopFramebuffer (THE SAME PHONE, but iPadOS 17.7.11 on xnu-10063, APFS root through Apple's prelinked apfs.kext),
+    UniXNU-sheng feat/ipados27-gpu-parity (iPadOS 27 24A446 on xnu-12377 = our kernel version; APFS too), Adreno740,
+    AdrenoMetal, ArmSmmu4K, AirNir, RamBlock, SoftwareAES, Virtio*; ry-diffusion Chlorophyll (ios26 = our base d3cb665,
+    nothing newer; main is 69 behind); oosexgang hakios-metal (Metal core on Adreno; CP_MEMCPY of 4 Mi words hung their
+    GPU) and the revamped hackios-xnu-kernel (cellular/IPA/modem on the POCO X5 Pro, nothing for our problems).
+    Taken now:
+      - kernel 2020 (NativeAdreno): (a) before a submission the pages of its command-stream BOs (every 32nd: all owned
+        BOs) are put back to write-combined when XNU has reset them to cacheable (their int-100/160: 123847 pages reset;
+        stale IB words: the CP stopped at the end of an IB, data read as addresses -- our hangs and float-like stray
+        reads); managed pages only, logged ("BO pages were no longer write-combined"); our arm pmap already has the
+        64-bit ptoa fix and pmap_sync_wimg on a WIMG change. (b) the full context entry whenever the submitting client
+        changes (c285ae8: BR/BV waited on each other for good; backboardd + MercuryPoster are two clients now). (c) a
+        stalled fence gets its WPTR written again at 50 ms (8ad15b6) before the 5 s recovery. (d) GEM_MAX 16384.
+      - kernel 2021 (UniXNU-sheng e9865b0, BSD-2-Clause-Patent): data protection classes emulated in an xattr on writable
+        mounts without MNT_CPROTECT (F_GET/SETPROTECTIONCLASS reach VNOP_GET/SETATTR): their PosterBoard judged its
+        class-D store "not viable" -> no wallpaper; the most direct match for our -2218. sweetdataprotect=0 turns it off.
+      - bgl-launch TU_DEBUG default sysmem,noubwc,nocb (they run nocb; Turnip's concurrent binning otherwise).
+    Not taken yet: direct scanout (GopFramebuffer: SM7635 CTL0 flush at 0xae16018, not our SDM845 0x02000; display
+    SMMU bank set up as the phone's Linux does), IOMFBDisplayRefresh reporting, GPU grant to every Metal client
+    (WidgetRenderer), HEIC -> PNG for the iOS_17/Clownfish wallpaper collections, kernel-side per-submission clean of
+    read-only imports, fsctl command logging for containermanagerd. Ruled out here: launch-constraint refusals (0 in our
+    log), vnode jetsam (none), cryptex paths (/System/Cryptexes/OS -> /private/preboot/Cryptexes/OS -> / resolves).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

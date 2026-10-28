@@ -1,0 +1,227 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index ef52bcb..15d7dc5 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2987,6 +2987,21 @@ sweet_gpu_report(const char *why)
+ 	sweet_log_sync();
+ }
+ 
++/* 2020: another client submits next (the A810's full context entry); a stalled fence's WPTR written again. A810 only. */
++void
++sweet_gpu_context_switch(void)
++{
++	if (sweet_board_asteroids()) {
++		sweet_a810_context_switch();
++	}
++}
++
++bool
++sweet_gpu_kick(void)
++{
++	return sweet_board_asteroids() && sweet_a810_kick() == 0;
++}
++
+ /* The CP's IB pointers for a hang dump (SweetAdreno's wait); the A810 only. */
+ bool
+ sweet_gpu_ib_state(uint32_t out[24])
+diff --git a/bsd/dev/sweet_a810.c b/bsd/dev/sweet_a810.c
+index 59c4730..df2bc8e 100644
+--- a/bsd/dev/sweet_a810.c
++++ b/bsd/dev/sweet_a810.c
+@@ -1702,6 +1702,42 @@ sweet_a810_recoveries(void)
+ 	return a810_recoveries;
+ }
+ 
++/*
++ * 2020, from UniXNU's NativeAdreno (c285ae8, 8ad15b6): the next framed submission carries the full context entry again
++ * (CP_RESET_CONTEXT_STATE between thread syncs, LRZ flush, SRAM init) whenever the submitting client changed: Turnip's
++ * BR/BV barriers keep on-chip timestamps and counters only that entry resets, and without it the two threads waited on
++ * each other for good with no fault. And a stalled fence first gets its write pointer written again (most of their
++ * stalls ended there within milliseconds) before the soft reset.
++ */
++void
++sweet_a810_context_switch(void)
++{
++	if (!a810_cp_started) {
++		return;
++	}
++	lck_mtx_lock(&a810_lck);
++	a810_ring_request_reset(&a810_ring);
++	lck_mtx_unlock(&a810_lck);
++}
++
++int
++sweet_a810_kick(void)
++{
++	uint32_t rptr = 0, wptr = 0, rbbm = 0;
++	int st;
++	if (!a810_cp_started) {
++		return -1;
++	}
++	lck_mtx_lock(&a810_lck);
++	a810_reg_read(NULL, A810_CP_RB_RPTR, &rptr);
++	a810_reg_read(NULL, A810_CP_RB_WPTR, &wptr);
++	a810_reg_read(NULL, A810_RBBM_STATUS, &rbbm);
++	st = a810_ring_kick(&a810_ring);
++	lck_mtx_unlock(&a810_lck);
++	A810_LOG("SWEET A810: stalled fence: WPTR written again (rptr %#x wptr %#x rbbm %#x) -> %d\n", rptr, wptr, rbbm, st);
++	return st;
++}
++
+ /* The CP's indirect-buffer pointers (a6xx.xml A8XX-: CP_IB1_BASE 0x900, REM 0x902, INIT 0x903, IB2 0x904.., IB3 0x908..), for
+  * the BR pipe (out[0..11]) and the BV pipe (out[12..23]): base lo/hi, remaining and initial dwords of IB1, IB2, IB3. */
+ bool
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index fd31957..a3e2657 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -54,6 +54,9 @@ bool sweet_a810_ib_state(uint32_t out[24]);
+ /* CP soft reset after a hang (2015): 1 when the GPU answers again; at most 64 a boot. */
+ int sweet_a810_recover(const char *why);
+ uint32_t sweet_a810_recoveries(void);
++/* 2020: the next submission carries the full context entry (another client submits); a stalled ring gets its WPTR again. */
++void sweet_a810_context_switch(void);
++int sweet_a810_kick(void);
+ 
+ /* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
+ bool sweet_a810_msm_ready(void);
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 6f79fb0..c9d6d01 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -59,11 +59,16 @@ uint32_t sweet_gpu_fence_last(void);
+ void sweet_gpu_mark_lost(void);
+ void sweet_gpu_report(const char *why);
+ bool sweet_gpu_ib_state(uint32_t out[24]);
++void sweet_gpu_context_switch(void);
++bool sweet_gpu_kick(void);
++unsigned int pmap_cache_attributes(ppnum_t pn);
++void pmap_set_cache_attributes(ppnum_t pn, unsigned int cacheattr);
+ void sweet_gpu_debug(uint32_t *w);
+ void SweetAdrenoPublish(void);
+ }
+ 
+-#define GEM_MAX                 4096
++#define GEM_MAX                 16384   /* 2020: 4096 filled up (NativeAdreno int-237: Turnip ignores the refusal inside a command stream reservation) */
++static const void *gLastSubmitter;     /* 2020: the client whose submission went last (the context entry on a change) */
+ #define GEM_SIZE_MAX            (256ull << 20)
+ #define QUEUE_IDS               64
+ #define SUBMIT_BOS_MAX          4096
+@@ -278,6 +283,9 @@ SweetAdrenoUserClient::clientClose(void)
+ 	sweet_gpu_lock();
+ 	if (!fClosed) {
+ 		fClosed = true;
++		if (gLastSubmitter == this) {
++			gLastSubmitter = NULL;
++		}
+ 		IOLockLock(gClientsLock);
+ 		for (unsigned i = 0; i < 32; i++) {
+ 			if (gClientPids[i].count && gClientPids[i].pid == fPid) {
+@@ -340,8 +348,9 @@ SweetAdrenoUserClient::copyIn(uint64_t addr, void *dst, size_t len)
+ bool
+ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ {
+-	uint64_t began = mach_absolute_time(), limit, cap, early;
++	uint64_t began = mach_absolute_time(), limit, cap, early, kick_at;
+ 	uint32_t epoch = sweet_gpu_epoch();
++	bool kicked = false;
+ 
+ 	if (fence == 0 || sweet_gpu_fence_done(fence)) {
+ 		return true;
+@@ -352,6 +361,7 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 	nanoseconds_to_absolutetime(ns, &limit);
+ 	nanoseconds_to_absolutetime((uint64_t)WAIT_PATIENCE_MS * NSEC_PER_MSEC, &cap);
+ 	nanoseconds_to_absolutetime(2 * NSEC_PER_MSEC, &early);
++	nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &kick_at);
+ 	for (;;) {
+ 		uint64_t waited = mach_absolute_time() - began;
+ 		if (sweet_gpu_fence_done(fence)) {
+@@ -363,6 +373,10 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 		if (sweet_gpu_check_fault() || !sweet_gpu_ready()) {
+ 			return false;                   /* the CP faulted: fail now instead of waiting for the timeout */
+ 		}
++		if (!kicked && waited >= kick_at) {
++			kicked = true;          /* 2020: 50 ms without the fence: the write pointer once more before anything else */
++			sweet_gpu_kick();
++		}
+ 		if (waited >= limit || waited >= cap) {
+ 			static uint32_t reported;
+ 			if (ns >= 100 * NSEC_PER_MSEC && reported != fence) {
+@@ -385,6 +399,44 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 	}
+ }
+ 
++/*
++ * 2020, from UniXNU's NativeAdreno (int-100, int-160, NativeAdrenoReassertWriteCombined): XNU can put the pages of a
++ * write-combined BO back to its default, cacheable attribute (they found 123847 scattered BO pages reset). A command
++ * stream or descriptor whose words then sit in a CPU cache is read stale by the GPU, which does not snoop: the CP stopped
++ * at the end of an IB, and data read as addresses. Before a submission the pages of its command-stream BOs, and every
++ * 32nd submission those of all its owned BOs, are checked and put back to write-combined (the pmap cleans a page it takes
++ * away from the cacheable attribute). Only managed pages: an I/O range answers VM_WIMG_IO and is left alone.
++ */
++#define SWEET_WIMG_MASK  0xffu
++#define SWEET_WIMG_WCOMB 0x6u           /* osfmk/arm/memory_types.h VM_WIMG_WCOMB */
++#define SWEET_WIMG_IO    0x7u           /* VM_WIMG_IO */
++static uint64_t gWcFixed, gWcChecked;
++static uint32_t gWcSubmits, gWcSaid;
++
++static uint32_t
++wcReassert(struct sweet_gem *g)
++{
++	uint32_t fixed = 0;
++	if (g == NULL || g->buf == NULL || g->md == NULL) {
++		return 0;                       /* owned (GEM_NEW, write-combined) BOs only */
++	}
++	for (uint64_t off = 0; off < g->size; off += PAGE_SIZE) {
++		IOByteCount length = 0;
++		addr64_t pa = g->md->getPhysicalSegment(off, &length, kIOMemoryMapperNone);
++		if (pa == 0) {
++			continue;
++		}
++		ppnum_t pn = (ppnum_t)(pa >> PAGE_SHIFT);
++		unsigned int attr = pmap_cache_attributes(pn) & SWEET_WIMG_MASK;
++		gWcChecked++;
++		if (attr != SWEET_WIMG_WCOMB && attr != SWEET_WIMG_IO) {
++			pmap_set_cache_attributes(pn, SWEET_WIMG_WCOMB);
++			fixed++;
++		}
++	}
++	return fixed;
++}
++
+ /*
+  * 2014: a hang's command streams in the kernel log, for decoding offline (Mesa's cffdec): the BR and BV pipes' IB1/IB2/IB3
+  * pointers, then the dwords of each IB that lies in one of this client's BOs with a kernel alias (Turnip's command-stream
+@@ -913,6 +965,32 @@ SweetAdrenoUserClient::submit(struct sweet_msm_gem_submit *r)
+ 			}
+ 			at += c->nr_relocs;
+ 		}
++		/* 2020: the command streams' pages (and every 32nd submission all owned BOs) back to write-combined */
++		{
++			uint32_t fixed = 0;
++			bool sweep = (++gWcSubmits & 31) == 0;
++			for (uint32_t i = 0; i < r->nr_bos; i++) {
++				bool is_cmd = false;
++				for (uint32_t k = 0; k < r->nr_cmds && !is_cmd; k++) {
++					is_cmd = cmds[k].submit_idx == i;
++				}
++				if (sweep || is_cmd) {
++					fixed += wcReassert(objs[i]);
++				}
++			}
++			if (fixed) {
++				gWcFixed += fixed;
++				if (gWcSaid++ < 16) {
++					IOLog("SWEET GPU: %u BO pages were no longer write-combined: put back (%llu so far, %llu checked)\n", fixed,
++					    gWcFixed, gWcChecked);
++				}
++			}
++		}
++		/* 2020: another client than the last one submits: the full context entry first */
++		if (gLastSubmitter != this) {
++			gLastSubmitter = this;
++			sweet_gpu_context_switch();
++		}
+ 		/* validated: patch, then submit */
+ 		at = 0;
+ 		for (uint32_t i = 0; i < r->nr_cmds; i++) {

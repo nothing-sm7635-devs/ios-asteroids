@@ -1,0 +1,25 @@
+diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
+index 37552ae..b3ca58c 100644
+--- a/bsd/dev/sweet_a810_msm.c
++++ b/bsd/dev/sweet_a810_msm.c
+@@ -431,7 +431,10 @@ sweet_a810_msm_fault_check(void)
+ 	return false;
+ }
+ 
+-/* msm MSM_PARAM_* (the numbers are sweet_a630.c's switch): the A810's facts from sweet_a810_board.h. */
++/* msm MSM_PARAM_* (the numbers are sweet_a630.c's switch): the A810's facts from sweet_a810_board.h.
++ * MACROTILE_MODE is Linux's qcom_ubwc_macrotile_mode(): ubwc_enc_version >= UBWC_3_1, so 1 for milos (UBWC 4.0). It was 0
++ * until 2016: Turnip then laid out UBWC surfaces for 4-channel macrotiles while hw_init (a8xx_set_ubwc_config's values)
++ * set the hardware up as Linux does; the ast13 hang dump had a UBWC RGBA16F render target bound. */
+ bool
+ sweet_a810_msm_param(uint32_t which, uint64_t *value)
+ {
+@@ -453,7 +456,7 @@ sweet_a810_msm_param(uint32_t which, uint64_t *value)
+ 	case 15: *value = SWEET_A810_VA_END - SWEET_A810_VA_START; return true;     /* VA_SIZE */
+ 	case 16: *value = AM_UBWC_HBB; return true;                    /* HIGHEST_BANK_BIT */
+ 	case 18: *value = AM_UBWC_SWIZZLE; return true;                /* UBWC_SWIZZLE */
+-	case 19: *value = 0; return true;                               /* MACROTILE_MODE */
++	case 19: *value = 1; return true;                               /* MACROTILE_MODE: 8-channel (2016) */
+ 	default: return false;
+ 	}
+ }

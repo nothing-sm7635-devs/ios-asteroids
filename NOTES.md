@@ -220,6 +220,13 @@
     recovery count, WAIT_FENCE succeeds for a voided fence (Turnip makes an error a lost device). At most 8 a boot; a failed
     recovery marks the GPU lost as before. Their hw_init values are for the X2's A8XX variant: not copied.
     tools/sweet-hang2rd.py + Mesa cffdump (chl-work/mesa-host) decode the 2014 dump.
+  * ast13 (kernel 13 = f68df7b, patch 2014 dump, no recovery; 2026-10-28): hang at fence 1072, dump decoded
+    (logs/ast13; tools/sweet-hang2rd.py + cffdump): the CP had consumed IB1 (59 dw) and IB2 (739 dw) completely (rem 0):
+    the GPU was executing, not parsing. IB2 = one sysmem render pass, 11 CP_DRAW_INDX_OFFSET; MRT0 RGBA8 linear at
+    0x25126000, MRT1 RGBA16F TILE6_3 + LOSSLESSCOMPEN (UBWC) with flag buffer 0x256d7000. No address outside the live BOs
+    in the decoded registers. Found: MSM_PARAM_MACROTILE_MODE answered 0, Linux answers qcom_ubwc_macrotile_mode() =
+    enc >= UBWC 3.1 = 1 for milos (UBWC 4.0): Turnip laid out UBWC surfaces for 4-channel macrotiles against a hardware
+    set up as Linux does. Kernel 2016: MACROTILE_MODE 1. If UBWC still misbehaves: TU_DEBUG=sysmem,noubwc (root).
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

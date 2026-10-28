@@ -406,7 +406,7 @@
 * **ast17b (2021 off via sweetdataprotect=0, logs/ast17b + logs/ast17b-var): Metal on (no dirs_cleaner), everything else the
   same.** Found: (1) iOS's dirs_cleaner boot task really empties /private/var/tmp, /var/run, /var/mobile/tmp at boot once
   the data-protection class reads back (2021) -- that is stock behaviour, so the arm switches now also live in
-  /private/var/db/bgmtl (bgl-launch, inject patch 0006, root_tweaks); 2021 stays ON (F_SETPROTECTIONCLASS = fcntl 63
+  /private/var/db/bgmtl (bgl-launch, inject patch 0006, root_tweaks); 2021 stays ON (F_GETPROTECTIONCLASS = fcntl 63, F_SET... = 64
   goes straight to VNOP_SETATTR: Preferences, chronod and sqlite got ENOTSUP for it on ast17b). (2) GPU: 41 "stalled
   fence" WPTR kicks (AHB fence never dropped a write: retries 0), 3 real hangs with RECOVERY: cffdump of the hang
   (tools/sweet-hang2rd.py) shows the CP consumed the whole IB (draws, event writes, WAIT_FOR_IDLE, WAIT_MEM_WRITES,

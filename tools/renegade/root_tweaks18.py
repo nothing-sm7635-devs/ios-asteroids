@@ -890,8 +890,12 @@ def bgmtl(root):
     if not os.path.exists(binp):
         print('bgmtl: no', MERCURY_BIN, 'in the image: skipped')
         return False
-    src = os.environ.get('RENEGADE_BGMTL_DIR') or BGMTL_DIR_DEFAULT
-    names = ('bgmtl-inject.dylib', 'libbgair.dylib', 'libdrm.2.dylib')
+    # the Chlorophyll build (asteroids/build-chlorophyll.sh) when RENEGADE_CHLOROPHYLL names it: its runtime is libchlorophyll.dylib;
+    # the older Gallium build's is libbgair.dylib. Looking only for libbgair skipped this step on every Turnip root, so the
+    # wallpaper extension never had a Metal device and first boot chose a poster that stays black (asteroids ast16).
+    src = os.environ.get('RENEGADE_BGMTL_DIR') or os.environ.get('RENEGADE_CHLOROPHYLL') or BGMTL_DIR_DEFAULT
+    runtime = 'libchlorophyll.dylib' if os.path.exists(os.path.join(src, 'libchlorophyll.dylib')) else 'libbgair.dylib'
+    names = ('bgmtl-inject.dylib', runtime, 'libdrm.2.dylib')
     if not all(os.path.exists(os.path.join(src, n)) for n in names):
         print('bgmtl: %s not built (gpu/metal/build-probe.sh; copy the three dylibs there): skipped, Mercury left alone' % src)
         note_skip('bgmtl', 'bgmtl dylibs not found in ' + src + '; MercuryPosterExtension left alone')

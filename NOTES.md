@@ -283,6 +283,15 @@
     once 0004 changed lines 0003 added). Other ast16 log failures checked: kernel syscall errors are ENOENT lookups
     (localisations, container layout), containermanagerd EEXIST/ENOTTY fsctl, csops ERANGE: none explains the UI. Turnip
     caps its heap at min(RAM share, VA window 1.5 GiB): the empty "texture refused" may be its OOM; 0003 now logs it.
+  * ast16b (kernel 16 scan image, root with Chlorophyll 0003+0004; 2026-10-28; photo from the user): home screen draws,
+    icons correct at the top and black blocks with white dashes in their lower part; widgets "Waiting..."; no wallpaper.
+    Logs logs/ast16b(+var): NO texture refused, NO no-copy failure (0004 works). Causes found in the run-flow:
+    (1) Chlorophyll's texture pool (BGMTL_TEXPOOL_MB 192, set by the inject) hands a released offscreen back with its old
+    contents; CoreAnimation draws part of some offscreens and relies on new memory being clear (the kernel zeroes every
+    new BO) -> bgl-launch sets BGMTL_TEXPOOL_MB=0 by default (bgmtl-bb.texpool overrides). (2) Metal exists only in
+    backboardd: root_tweaks18.bgmtl (the wallpaper extension MercuryPoster gets the inject, bgmtl.arm, first boot then picks
+    the Metal poster) looked for the Gallium runtime libbgair.dylib and skipped on every Turnip root -> it takes
+    RENEGADE_CHLOROPHYLL and libchlorophyll.dylib. Widgets (WidgetRenderer) are not in the inject's allow list yet.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

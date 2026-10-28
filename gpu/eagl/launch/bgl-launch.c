@@ -236,6 +236,8 @@ static void clean_legibility_pools(void)
 #define BB_TUDEBUG "/private/var/tmp/bgmtl-bb.tudebug"
 #define BB_TUDEBUG_DEFAULT "sysmem,noubwc"
 #define BB_SKIPCOMPUTE "/private/var/tmp/bgmtl-bb.skipcompute"
+#define BB_TEXPOOL "/private/var/tmp/bgmtl-bb.texpool"
+#define BB_TEXPOOL_DEFAULT "0"
 #define BB_SKIPCOMPUTE_DEFAULT "compute_average_luma,compute_sum_luma"
 #define BB_GPU_WAIT 90
 #define GPU_SERVICE "SweetAdreno630"   /* SWEET_GPU_SERVICE_NAME, xnu/gpu-abi/sweet_adreno_abi.h */
@@ -366,6 +368,12 @@ int main(int argc, char **argv)
 			setenv("TU_DEBUG", tud, 1);
 		if (skip[0])
 			setenv("BGMTL_SKIP_COMPUTE", skip, 1);
+		/* Chlorophyll's texture pool hands a released texture back with its old contents; CoreAnimation draws part of some
+		 * offscreens and relies on a new texture being clear (the kernel zeroes new memory): icons came out with their lower
+		 * part made of an earlier frame's leftovers (asteroids ast16b). Off by default (MiB in bgmtl-bb.texpool). */
+		char pool[32];
+		file_setting(BB_TEXPOOL, BB_TEXPOOL_DEFAULT, pool, sizeof pool);
+		setenv("BGMTL_TEXPOOL_MB", pool[0] ? pool : "0", 1);
 		if (stat(LOG_PATH, &st) == 0 && st.st_size > (1 << 20))
 			unlink(LOG_PATH);
 		int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -374,8 +382,8 @@ int main(int argc, char **argv)
 			close(fd);
 			fputs(g_note, stderr);
 			fputs(g_wait_msg, stderr);
-			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll), TU_DEBUG=%s, BGMTL_SKIP_COMPUTE=%s\n",
-			    BB_LIBDIR, tud[0] ? tud : "(none)", skip[0] ? skip : "(none)");
+			fprintf(stderr, "bgl-launch: Metal mode: injecting %s/bgmtl-inject.dylib (Chlorophyll), TU_DEBUG=%s, BGMTL_SKIP_COMPUTE=%s, "
+			    "BGMTL_TEXPOOL_MB=%s\n", BB_LIBDIR, tud[0] ? tud : "(none)", skip[0] ? skip : "(none)", getenv("BGMTL_TEXPOOL_MB"));
 		}
 		argv[0] = (char *)REAL_PATH;
 		execv(REAL_PATH, argv);

@@ -30,7 +30,8 @@
  * 2026-10-28): a Metal launch first waits for the service (BB_GPU_WAIT s, or the number in bgmtl-bb.wait). Without it the inject
  * ran stock, its alive=0 switched Metal off at the next start and the rest of the boot had CoreAnimation's CPU renderer. A GPU that
  * never appears writes bgmtl-bb.off (the next starts do not wait again) and this start runs plain.
- * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem". The first Metal backboardd
+ * TU_DEBUG for Turnip: the first line of bgmtl-bb.tudebug (an empty file: none), default "sysmem,flushall" (flushall since ast9: a
+ * submission still hung after 2451 with sysmem alone; A810 support in Mesa 26.2 is new, a missing cache flush is the next suspect). The first Metal backboardd
  * (ast8-60, 2026-10-28) drew for a while, then a submission never came back (GPU lost); GMEM/binning on the A810 runs on
  * hand-set GMEM parameters, so sysmem rendering is the first suspect ruled out.
  */
@@ -229,7 +230,7 @@ static void clean_legibility_pools(void)
 #define BB_LIBDIR "/usr/local/lib/bgmtl"
 #define BB_WAIT   "/private/var/tmp/bgmtl-bb.wait"
 #define BB_TUDEBUG "/private/var/tmp/bgmtl-bb.tudebug"
-#define BB_TUDEBUG_DEFAULT "sysmem"
+#define BB_TUDEBUG_DEFAULT "sysmem,flushall"
 #define BB_GPU_WAIT 90
 #define GPU_SERVICE "SweetAdreno630"   /* SWEET_GPU_SERVICE_NAME, xnu/gpu-abi/sweet_adreno_abi.h */
 

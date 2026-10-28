@@ -1,0 +1,112 @@
+diff --git a/src/bgmtl.m b/src/bgmtl.m
+index 7b6e86e..82a296b 100644
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -1518,15 +1518,19 @@ bg_return_slot(BGMTLCommandBuffer *cb, BGMTLCommandQueue *queue)
+ - (void)addScheduledHandler:(void (^)(id))block
+ {
+    if (!block) return;
+-   if (_status >= 3) block(self); else [_scheduled addObject:[[block copy] autorelease]];
++   BOOL now;
++   @synchronized(self) { now = _status >= 3; if (!now) [_scheduled addObject:[[block copy] autorelease]]; }
++   if (now) block(self);
+ }
+-- (void)presentDrawable:(id)drawable { if (drawable) [_presents addObject:@[ drawable, @0.0, @0.0 ]]; }
+-- (void)presentDrawable:(id)drawable atTime:(CFTimeInterval)t { if (drawable) [_presents addObject:@[ drawable, @(t), @0.0 ]]; }
+-- (void)presentDrawable:(id)drawable afterMinimumDuration:(CFTimeInterval)d { if (drawable) [_presents addObject:@[ drawable, @0.0, @(d) ]]; }
++- (void)presentDrawable:(id)drawable { if (drawable) @synchronized(self) { [_presents addObject:@[ drawable, @0.0, @0.0 ]]; } }
++- (void)presentDrawable:(id)drawable atTime:(CFTimeInterval)t { if (drawable) @synchronized(self) { [_presents addObject:@[ drawable, @(t), @0.0 ]]; } }
++- (void)presentDrawable:(id)drawable afterMinimumDuration:(CFTimeInterval)d { if (drawable) @synchronized(self) { [_presents addObject:@[ drawable, @0.0, @(d) ]]; } }
+ - (void)addCompletedHandler:(void (^)(id))block
+ {
+    if (!block) return;
+-   if (_status >= 4) block(self); else [_completed addObject:[[block copy] autorelease]];
++   BOOL now;
++   @synchronized(self) { now = _status >= 4; if (!now) [_completed addObject:[[block copy] autorelease]]; }
++   if (now) block(self);
+ }
+ - (void)waitUntilScheduled { if (_status >= 2 && getenv("BGMTL_BB")) dispatch_group_wait(_done, DISPATCH_TIME_FOREVER); }
+ 
+@@ -1606,6 +1610,21 @@ bg_perf_note(uint64_t t_first, uint64_t t_begin, uint64_t t_flushed, uint64_t t_
+    }
+ }
+ 
++// The handler and present lists of a command buffer are filled by the thread that encodes it and drained by the one that
++// completes it (bg_cmdbuf_done runs on the submission thread): every access holds the command buffer's lock, and a list is
++// drained by taking it whole, so a handler that adds another handler cannot mutate a list being enumerated (backboardd
++// died on "Collection <__NSArrayM> was mutated while being enumerated" in bgCompleteFrom, ast9 2026-10-28).
++static NSArray *
++bg_take(id owner, NSMutableArray *list)
++{
++   NSArray *all;
++   @synchronized(owner) {
++      all = [list copy];
++      [list removeAllObjects];
++   }
++   return [all autorelease];
++}
++
+ struct bg_done_ctx { BGMTLCommandBuffer *cb; uint64_t t_begin, t_flushed; };
+ 
+ static void
+@@ -1648,7 +1667,7 @@ bg_cmdbuf_done(void *ctx, int status, const char *why)
+       if (chl_cmdbuf_commit(_ccb, NULL, NULL, why, sizeof(why)) != 0) [self bgFailWith:[NSString stringWithUTF8String:why] code:2];
+       if (_status != 5 && !defer_scheduled) _status = 3;
+       uint64_t t_flushed = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+-      if (!defer_scheduled) { for (void (^h)(id) in _scheduled) h(self); [_scheduled removeAllObjects]; }
++      if (!defer_scheduled) { for (void (^h)(id) in bg_take(self, _scheduled)) h(self); }
+       if (_status != 5 && chl_cmdbuf_wait(_ccb, why, sizeof(why)) != 0) [self bgFailWith:[NSString stringWithUTF8String:why] code:3];
+       else if (_status != 5) _status = 4;
+       bg_perf_note(_t_first, t_begin, t_flushed, clock_gettime_nsec_np(CLOCK_MONOTONIC), _draws);
+@@ -1664,7 +1683,7 @@ bg_cmdbuf_done(void *ctx, int status, const char *why)
+       if (chl_cmdbuf_commit(_ccb, bg_cmdbuf_done, ctx, why, sizeof(why)) != 0)
+          return;   // bg_cmdbuf_done ran with the failure
+       ctx->t_flushed = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+-      if (!defer_scheduled) { for (void (^h)(id) in _scheduled) h(self); [_scheduled removeAllObjects]; }
++      if (!defer_scheduled) { for (void (^h)(id) in bg_take(self, _scheduled)) h(self); }
+       return;
+    }
+    [self bgCompleteFrom:t_begin];
+@@ -1702,8 +1721,7 @@ bg_idle_trim_schedule(void)
+ - (void)bgCompleteFrom:(uint64_t)t_begin
+ {
+    bg_return_slot(self, _queue);
+-   for (void (^h)(id) in _scheduled) h(self);    // left here by the compositor's deferral (see commit)
+-   [_scheduled removeAllObjects];
++   for (void (^h)(id) in bg_take(self, _scheduled)) h(self);    // left here by the compositor's deferral (see commit)
+    // buffer-backed textures: the GPU's result goes back into their buffers before any completed handler reads them
+    for (BGMTLTexture *t in _linWritten) {
+       if (_status == 4) [t bgLinearWriteBack];
+@@ -1729,16 +1747,17 @@ bg_idle_trim_schedule(void)
+       }
+       for (BGMTLTexture *t in xr) [t bgXR10WriteBack];   // the write unlock moves these surfaces' seeds
+    }
+-   if (_status == 4 && [_presents count]) {
++   NSArray *presents = bg_take(self, _presents);
++   if (_status == 4 && [presents count]) {
+       uint64_t t_end = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+       char line[200];
+-      snprintf(line, sizeof(line), "present: %u presents, %u draws, commit %.1f ms, at %.3f s", (unsigned)[_presents count], _draws,
++      snprintf(line, sizeof(line), "present: %u presents, %u draws, commit %.1f ms, at %.3f s", (unsigned)[presents count], _draws,
+                (t_end - t_begin) / 1e6, t_end / 1e9);
+       bgmtl_note_present(line);
+    }
+    if (_status == 4) bgmtl_note_completed();
+    if (_status == 4) {
+-      for (NSArray *p in _presents) {
++      for (NSArray *p in presents) {
+          id dr = p[0];
+          double at = [p[1] doubleValue], after = [p[2] doubleValue];
+          if (at > 0 && [dr respondsToSelector:@selector(presentAtTime:)]) [dr presentAtTime:at];
+@@ -1746,10 +1765,8 @@ bg_idle_trim_schedule(void)
+          else [dr present];
+       }
+    }
+-   [_presents removeAllObjects];
+    [_written removeAllObjects];
+-   for (void (^h)(id) in _completed) h(self);
+-   [_completed removeAllObjects];
++   for (void (^h)(id) in bg_take(self, _completed)) h(self);
+    bg_idle_trim_schedule();
+ }
+ 

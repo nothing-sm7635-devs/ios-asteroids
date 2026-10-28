@@ -1,0 +1,189 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 1b54353..bb13284 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2744,7 +2744,7 @@ bool
+ sweet_gpu_check_fault(void)
+ {
+ 	if (sweet_board_asteroids()) {
+-		return false;   /* no SMMU fault check on the A810 yet */
++		return sweet_a810_msm_fault_check();   /* logged and cleared; the wait goes on */
+ 	}
+ 	vm_offset_t b;
+ 	uint32_t fsr;
+@@ -2967,6 +2967,7 @@ sweet_gpu_report(const char *why)
+ {
+ 	if (sweet_board_asteroids()) {
+ 		printf("SWEET GPU: A810 %s: ready %d, last fence %u\n", why, sweet_a810_msm_ready(), sweet_a810_msm_fence_last());
++		(void)sweet_a810_msm_fault_check();
+ 		sweet_a810_hang_report(why);
+ 		return;
+ 	}
+diff --git a/bsd/dev/sweet_a810_api.h b/bsd/dev/sweet_a810_api.h
+index d20b4e8..4a8953d 100644
+--- a/bsd/dev/sweet_a810_api.h
++++ b/bsd/dev/sweet_a810_api.h
+@@ -47,6 +47,8 @@ int sweet_a810_vm_unmap(uint64_t iova, uint64_t bytes);
+ bool sweet_a810_timestamp(uint64_t *value);
+ /* CP state, ring accounting and the ring around the CP read pointer, for a submission that did not come back. */
+ void sweet_a810_hang_report(const char *why);
++/* Polls, logs and clears GPU SMMU faults (sweet_a810_msm.c); false: nothing for the caller to do. */
++bool sweet_a810_msm_fault_check(void);
+ 
+ /* sweet_a810_msm.c: the sweet_gpu_* functions of sweet_a630.c forward to these on asteroids (same meanings). */
+ bool sweet_a810_msm_ready(void);
+diff --git a/bsd/dev/sweet_a810_msm.c b/bsd/dev/sweet_a810_msm.c
+index 4adbbfa..37552ae 100644
+--- a/bsd/dev/sweet_a810_msm.c
++++ b/bsd/dev/sweet_a810_msm.c
+@@ -9,7 +9,9 @@
+  *     TLB invalidate). A bitmap of mapped pages lets a map over a page that is still mapped replace it (the A630's
+  *     page-table write did) and lets an unmap skip pages that were never mapped.
+  *   - A submission of several IBs is one sweet_a810_submit_ib per IB; the fence is the last one's.
+- *   - No SMMU fault check and no recovery yet: a submission that does not come back marks the GPU lost.
++ *   - SMMU faults of the GPU bank are polled while a client waits (sweet_a810_msm_fault_check): each new faulting page is
++ *     logged with what the address is to this backend (mapped, inside a live allocation, free, or a recently freed range)
++ *     and the fault status cleared. No recovery yet: a submission that does not come back marks the GPU lost.
+  */
+ #include <pexpert/arm64/board_config.h>
+ 
+@@ -23,6 +25,10 @@
+ #include "sweet_board.h"
+ #include "sweet_a810_api.h"
+ 
++/* sweet_a810_smmu.c (its header also carries sweet_a810.c's bring-up types) */
++extern void a810_gpu_context_faults(uint32_t out[5]);
++extern void a810_gpu_context_clear_fault(uint32_t fsr);
++
+ extern void sweet_log_sync(void);               /* sweet_ufs.c */
+ 
+ /* the client-visible facts of sweet_a810_board.h (GPB_A810_CHIP_ID, GPB_A810_GMEM_BYTES, GPB_UBWC_HBB, GPB_UBWC_SWIZZLE);
+@@ -48,6 +54,15 @@ static uint32_t am_maps, am_submits;
+ static uint64_t am_run_iova, am_run_pa, am_run_bytes;
+ static unsigned am_run_prot;
+ 
++/* the newest frees, for naming a faulting address: range and the newest fence when it was freed */
++#define AM_FREED        256
++static struct {
++	uint64_t iova, size;
++	uint32_t fence;
++} am_freed[AM_FREED];
++static unsigned am_freed_next;
++static unsigned am_faults;
++
+ static LCK_GRP_DECLARE(am_lck_grp, "sweeta810msm");
+ static LCK_MTX_DECLARE(am_mtx, &am_lck_grp);
+ 
+@@ -173,6 +188,10 @@ sweet_a810_msm_iova_free(uint64_t iova, uint64_t size)
+ 	if (!am_inited || am_mapped == NULL) {
+ 		return;
+ 	}
++	am_freed[am_freed_next % AM_FREED].iova = iova;
++	am_freed[am_freed_next % AM_FREED].size = size;
++	am_freed[am_freed_next % AM_FREED].fence = am_last;
++	am_freed_next++;
+ 	while (i < am_nfree && am_free[i].start < iova) {
+ 		i++;
+ 	}
+@@ -345,6 +364,73 @@ sweet_a810_msm_mark_lost(void)
+ 	}
+ }
+ 
++/*
++ * The GPU bank's fault status, polled by SweetAdreno's fence wait. A fault (TF/AFF/PF/EF/TLB/ASF/UUT/SS/MULTI; bit 10 reads
++ * set on this SMMU without a fault) is logged with what its page is here, then cleared. The bank terminates faulting
++ * transactions (SCTLR.CFCFG 0), so the GPU is not held; whether it then finishes is what the fence wait sees.
++ * Returns false: the wait goes on.
++ */
++bool
++sweet_a810_msm_fault_check(void)
++{
++	uint32_t f[5];
++	static uint64_t last_page = ~0ull;
++
++	if (!am_inited || am_mapped == NULL || !sweet_a810_ready()) {
++		return false;
++	}
++	a810_gpu_context_faults(f);
++	if (!(f[0] & 0xc00001feu)) {
++		return false;
++	}
++	uint64_t far = ((uint64_t)f[2] << 32) | f[1], page = far & ~(AM_PAGE - 1);
++	a810_gpu_context_clear_fault(f[0]);
++	am_faults++;
++	if (page == last_page && am_faults > 1) {
++		return false;
++	}
++	last_page = page;
++	if (am_faults > 64 && (am_faults & 63) != 0) {
++		return false;
++	}
++	const char *what = "outside the GPU address window";
++	if (far >= SWEET_A810_VA_START && far < SWEET_A810_VA_END) {
++		what = am_bit(page) ? "MAPPED (a permission or walk fault)" : "inside a live allocation but not mapped (its guard page?)";
++		for (unsigned i = 0; i < am_nfree; i++) {
++			if (far >= am_free[i].start && far < am_free[i].start + am_free[i].size) {
++				what = "in FREE address space";
++				break;
++			}
++		}
++	}
++	printf("SWEET GPU: A810 SMMU FAULT %u: FSR %#x FAR %#llx FSYNR0 %#x (%s, %s): %s; newest fence %u, observed done %d\n",
++	    am_faults, f[0], far, f[3], (f[3] & 0x10) ? "write" : "read", (f[0] & 0x40000000u) ? "stalled" : "terminated", what,
++	    am_last, sweet_a810_fence_passed(am_last));
++	unsigned shown = 0;
++	for (unsigned k = 0; k < AM_FREED && k < am_freed_next && shown < 4; k++) {
++		unsigned i = (am_freed_next - 1 - k) % AM_FREED;
++		if (far >= am_freed[i].iova && far < am_freed[i].iova + am_freed[i].size + AM_PAGE) {
++			printf("SWEET GPU: A810 SMMU FAULT %u: the page was in %#llx+%#llx, freed %u frees ago at fence %u\n", am_faults,
++			    am_freed[i].iova, am_freed[i].size, k, am_freed[i].fence);
++			shown++;
++		}
++	}
++	if (!shown) {
++		uint64_t lo = 0, hi = ~0ull;
++		for (unsigned i = 0; i < am_nfree; i++) {
++			uint64_t e = am_free[i].start + am_free[i].size;
++			if (am_free[i].start <= far && far < e) {
++				lo = am_free[i].start;
++				hi = e;
++			}
++		}
++		printf("SWEET GPU: A810 SMMU FAULT %u: not among the last %u frees; free range around it %#llx-%#llx, %u free ranges\n",
++		    am_faults, AM_FREED, lo, hi, am_nfree);
++	}
++	sweet_log_sync();
++	return false;
++}
++
+ /* msm MSM_PARAM_* (the numbers are sweet_a630.c's switch): the A810's facts from sweet_a810_board.h. */
+ bool
+ sweet_a810_msm_param(uint32_t which, uint64_t *value)
+diff --git a/bsd/dev/sweet_a810_smmu.c b/bsd/dev/sweet_a810_smmu.c
+index 6bdcaed..7f3f5c9 100644
+--- a/bsd/dev/sweet_a810_smmu.c
++++ b/bsd/dev/sweet_a810_smmu.c
+@@ -1132,4 +1132,12 @@ a810_gpu_context_faults(uint32_t out[5])
+ 		io_read32(&gpu_ctx.io, (size_t)gpu_ctx.context_offset + regs[i], &out[i]);
+ 	}
+ }
++/* Clears the GPU bank's fault status (write-one-to-clear), so the next fault is recorded on its own. */
++void
++a810_gpu_context_clear_fault(uint32_t fsr)
++{
++	if (gpu_ctx.used && gpu_ctx.context_offset && fsr) {
++		io_write32(&gpu_ctx.io, (size_t)gpu_ctx.context_offset + 0x58, fsr);
++	}
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_a810_smmu.h b/bsd/dev/sweet_a810_smmu.h
+index 43b4eb3..bbc7f7a 100644
+--- a/bsd/dev/sweet_a810_smmu.h
++++ b/bsd/dev/sweet_a810_smmu.h
+@@ -96,5 +96,6 @@ int a810_gpu_map(uint64_t iova, uint64_t pa, uint64_t bytes, unsigned prot);
+ int a810_gpu_unmap(uint64_t iova, uint64_t bytes);
+ /* The GPU bank's FSR, FAR lo, FAR hi, FSYNR0 and ACTLR (zeros before the bank was programmed). */
+ void a810_gpu_context_faults(uint32_t out[5]);
++void a810_gpu_context_clear_fault(uint32_t fsr);
+ const char *a810_smmu_status_text(uint32_t status);
+ #endif

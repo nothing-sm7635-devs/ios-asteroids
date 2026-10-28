@@ -19,6 +19,11 @@ CHL_REF=${CHL_REF:-ios26}
 mkdir -p "$WORK/bin"
 cd "$WORK"
 [ -d Chlorophyll ] || git clone -q --depth 1 -b "$CHL_REF" https://github.com/ry-diffusion/Chlorophyll.git Chlorophyll
+# Bergamota's fixes on top (asteroids/chlorophyll-patches), each applied once
+for p in "$HERE"/asteroids/chlorophyll-patches/*.patch; do
+	[ -e "$p" ] || continue
+	git -C Chlorophyll apply --reverse --check "$p" 2>/dev/null || git -C Chlorophyll apply "$p"
+done
 [ -d mesa-src-26.2.5 ] || git clone -q --depth 1 --branch mesa-26.2.5 https://gitlab.freedesktop.org/mesa/mesa.git mesa-src-26.2.5
 [ -d libdrm-src ] || git clone -q --depth 1 --branch libdrm-2.4.124 https://gitlab.freedesktop.org/mesa/drm.git libdrm-src
 [ -x venv/bin/meson ] || { python3 -m venv venv && venv/bin/pip -q install meson mako pyyaml packaging; }

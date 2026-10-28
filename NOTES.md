@@ -167,6 +167,19 @@
     Changes for the next try: kernel 2011 (sweet_a810_hang_report: CP state, SMMU fault, ring accounting, protect/RL error,
     ring dwords around RPTR on a timed-out wait); bgl-launch sets TU_DEBUG=sysmem by default (bgmtl-bb.tudebug overrides,
     empty = none: first suspect is GMEM/binning); root_tweaks18.audio moves the four speech extensions aside.
+  * ast9 (CI 40614348622 = 4b6d9a3, 60 Hz, TU_DEBUG=sysmem, 2026-10-28): user saw icons glitch and the respring spinner after
+    the lock screen, then CPU rendering. Logs logs/ast9 + logs/ast9-var. (1) backboardd[64] on Chlorophyll died on an ObjC
+    exception "Collection <__NSArrayM> was mutated while being enumerated" in bg_cmdbuf_done -> bgCompleteFrom (inject offsets
+    0xc234/0xc0e4): the completion thread drains _scheduled/_completed/_presents while the encoding thread drains _scheduled
+    after chl_cmdbuf_commit and adds handlers, unlocked. (2) backboardd[364] on Chlorophyll: 2451 submissions (sysmem got far
+    further than GMEM's 16), then a hang after the first compute pipelines (compute_average_luma/sum_luma): hang report:
+    rptr 0x17c0 wptr 0x17df rbbm 0xec0405, SMMU FSR 0x80000402 (TF + MULTI) FAR 0x494fab00 read, the IB at 0x25361000 (0x280
+    dwords). Every live BO was in 0x20000000-0x3542c000: FAR is far above them (garbage address or a freed range). Turnip runs
+    with has_set_iova=false (Chlorophyll: kernel addresses), so SET_IOVA(0) is not used.
+    Fixes: asteroids/chlorophyll-patches/0001 (handler/present lists under @synchronized, drained by snapshot; applied by
+    build-chlorophyll.sh); kernel 2012 (SMMU fault poll in the fence wait: FAR named as mapped / live / free / recently freed
+    with its fence, FSR cleared; also in the hang report); bgl-launch TU_DEBUG default sysmem,flushall; boot images add
+    sweetsurf_lossless=1 so a CPU-rendered fallback does not die on push_surface.
   * Firmware into the ADT: asteroids/build-boot.sh -> tools/adt-gpufw.py --prefix gen80300 --zap-mbn (b2bae9f).
   * Next: wire SweetAdreno630 (msm ABI) to sweet_a810_api, chip 0x44010000; Chlorophyll/Turnip A810 build on the Mac.
 * (done) CI kernel with 2000; `ipsw` on the host (needed by `renegade fetch` and for research/ios26/n104ap.adt);

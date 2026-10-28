@@ -1,0 +1,13 @@
+diff --git a/config/IOKit.exports b/config/IOKit.exports
+index 562a605..697ebe1 100644
+--- a/config/IOKit.exports
++++ b/config/IOKit.exports
+@@ -2028,8 +2028,6 @@ __ZN23IOMultiMemoryDescriptor12setPurgeableEjPj
+ __ZN23IOMultiMemoryDescriptor18getPhysicalSegmentEyPyj
+ __ZN23IOMultiMemoryDescriptor5doMapEP7_vm_mapPyjyy
+ 
+-# SWEET: IOStorageFamily 337.100.1 compiled into the kernel (iokit/Families/IOStorageFamily): the symbols the
+-# macOS 26.5 KDK's IOStorageFamily.kext exports, so prelinked KDK kexts (apfs) bind to the in-kernel copy
+ __Z32_IOMediaBSDClientGetThrottleMaskP7IOMedia
+ __ZN10MinorTable10isObsoleteEj
+ __ZN10MinorTable23getOpenCountForAnchorIDEj

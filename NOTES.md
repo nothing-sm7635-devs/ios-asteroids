@@ -376,6 +376,23 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **Round 2 fixes landed (2026-10-28 19:40Z, kernel 2023 + root; CI not yet pushed, waiting for the APFS step-1 patches):**
+  kernel 2023 `sweet_fsctl_fallback` (vfs_syscalls.c): on a non-APFS mount FSIOC_CAS_BSDFLAGS is done with getattr/setattr
+  (libcopyfile sends it on every attribute copy, HFS+ said ENOTTY) and APFS 'J' commands that only set state, plus
+  APFSIOC_MARK_PURGEABLE ('J' 68, found by disassembly: libremovefile and PosterBoard send it to every directory and ignore
+  the answer), are answered 0; 'J' commands returning data stay ENOTTY; one log line per command (`SWEET FS: fsctl`);
+  boot-arg sweetfsctl=0. Turnip default TU_DEBUG now `sysmem,noubwc,nocb,nolrz` (bgl-launch; LRZ is the usual suspect
+  for a pipeline that never idles after a draw). Next image: `sweeta810level=8` (960 MHz instead of 763).
+  **PosterBoard -2218 decoded** (PosterBoard.framework+0x11f10, `pbf_dataStoreErrorWithCode:`): it is raised when
+  `_stateLock_knownPosterDescriptorsForExtensionBundleIdentifier:` returns nil, i.e. the data store has NO descriptors
+  for the extension = the poster extension was never registered/discovered (pkd/LaunchServices), not a file-system
+  error of the store. Same mechanism would leave chronod without widget extensions. The catalog files exist in the
+  root (/System/Library/xpc/extensions.plist + .sig, 62 .appexpt), lsd's op 0x60 is answered (unsigned read allowed),
+  the root ships no LS database (lsd seeds at first boot). Unknown: whether the seed registers the appexes on iOS 26
+  (docs/EXTENSION_POINTS_2.md: on iOS 18 they were dropped with "validation issue(s)" when the catalog was unreadable).
+  Next boot: `sweetsyserr=...,lsd,pkd` and read what lsd/pkd fail on; consider porting sheng's LS-store drop as a
+  root tweak (ours already ships no store).
+
 * **MEASURED ON THE HARDWARE (2026-10-28 19:00Z, Lineage recovery, adb root; dumps in research/asteroids-hw/: asteroids.dts
   (from /sys/firmware/fdt), dmesg-recovery.txt, iomem.txt, interrupts.txt, cpuinfo.txt -- git-ignored):**
   - **PAC WORKS AT EL1 UNDER GUNYAH:** Linux 6.6 logs `CPU features: detected: Address authentication (architected QARMA3

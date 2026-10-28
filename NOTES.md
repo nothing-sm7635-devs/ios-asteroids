@@ -376,6 +376,19 @@
 
 ### >>> ACTIVE HANDOFF (2026-10-28 evening; read this first) <<<
 
+* **ast18 boot 1 (kernel 18 = series ..2036, 22:40Z, logs/ast18 + ast18-var): WALLPAPER APPEARS (first time on iOS 26 here;
+  Mercury fluidity.two selected, sweetposterset rc=0) but with wrong colours; icons still glitch; Control Center comes up as
+  grey boxes; Safari aborts (4x); Settings freezes; recents work.** Found: (1) backboardd refused 83 textures "pixel format
+  500 ... no Vulkan format": 579x1254 two-plane YCbCr (MTLPixelFormatYCBCR8_420_2P over 420f/420v; iOSPlus10's camera notes
+  confirm the number) = SpringBoard's Control Center / app-switcher backdrop snapshots -> Chlorophyll patch 0007: own BGRA8
+  memory + CPU decode (BT.709, video/full range, 8- and 10-bit) like the XR10 path; rebuilt in chl-work/out-metal (root
+  rebuild needed). (2) The syserr budget was eaten by lsd (846 of 900 lines, all ENOENT for lproj/_CodeSignature files): no
+  Safari/Preferences trace at all -> kernel 2037 caps one process at 200 lines. (3) 'J' fsctls still ENOTTY (data-returning):
+  J106 _IOR 8, J96 _IOR 16, J113 _IOWR 0x110, J134 _IOR 4, J132 _IOWR 16, J3 _IOR 24, J102 (FSIOC_GET_GRAFT_INFO); J68 and J2
+  answered 0. (4) GPU: 286 WPTR kicks (harmless), 3 RECOVERY hangs again (nolrz did not remove them), rbbm 0xec0405 at the
+  hang, CP at the end of IB1/IB2 each time; the "completed" field of the hang line is ring accounting, not a fence read.
+  (5) lsd's own failures: readlink EINVAL on app binaries (4), getxattr ENOATTR; nothing that explains dropped appexes.
+
 * **APFS kernel step 1 LANDED (2026-10-28 ~20:30Z, kernel patches 2030-2033, local checks only, NOT built on CI, NOT
   booted; the Bergamota commit holds the patches + tools/mkpayload.py + this entry; nothing pushed).**
   - **2030 IOStorageFamily 337.100.1 in the kernel** (= KDK 25F84's IOStorageFamily.kext, version.plist SourceVersion

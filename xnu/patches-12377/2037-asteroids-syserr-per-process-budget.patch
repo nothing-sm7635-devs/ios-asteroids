@@ -1,0 +1,53 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 5cf5409..c108ee8 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -641,6 +641,30 @@ sweet_amfi_policy_register(void)
+  * "containermanager"). At most SWEET_SYSERR_MAX lines in total.
+  */
+ #define SWEET_SYSERR_MAX        900
++/* Bergamota 2037: one process may take at most this many of the lines (lsd's 846 ENOENT lines took the whole budget of
++ * asteroids ast18 and the traced apps got none) */
++#define SWEET_SYSERR_PER_PROC   200
++static uint64_t sweet_syserr_proc_names[16];
++static int sweet_syserr_proc_lines[16];
++static int
++sweet_syserr_proc_budget(const char *name)
++{
++	uint64_t h = 0xcbf29ce484222325ULL;
++	for (const char *c = name; *c; c++) {
++		h = (h ^ (uint8_t)*c) * 0x100000001b3ULL;
++	}
++	for (int i = 0; i < 16; i++) {
++		if (sweet_syserr_proc_names[i] == h) {
++			return sweet_syserr_proc_lines[i]++ < SWEET_SYSERR_PER_PROC;
++		}
++		if (sweet_syserr_proc_names[i] == 0) {
++			sweet_syserr_proc_names[i] = h;
++			sweet_syserr_proc_lines[i] = 1;
++			return 1;
++		}
++	}
++	return 1;
++}
+ #define SWEET_SYSERR_DEFAULT    "containermanagerd,containermanagerd_system,usermanagerd,backboardd," \
+ 	"lsd,mobileactivationd,replicatord,passd,appprotectiond,findmydeviced,cryptexd,dropbear," \
+ 	"financed,spaceattributiond,fairplayd.H2,PerfPowerServices,webinspectord,launchd,xpcproxy"
+@@ -812,7 +836,7 @@ sweet_machtrap_trace(struct proc *p, int call, int kr)
+ 	}
+ 	char name[32];
+ 	proc_selfname(name, sizeof(name));
+-	if (!sweet_syserr_match(name)) {
++	if (!sweet_syserr_match(name) || !sweet_syserr_proc_budget(name)) {
+ 		return;
+ 	}
+ 	uint64_t key = sweet_syserr_hash(0x84222325cbf29ce4ULL, name);
+@@ -854,7 +878,7 @@ sweet_syserr_trace(struct proc *p, unsigned short code, int error, const uint64_
+ 	}
+ 	char name[32];
+ 	proc_selfname(name, sizeof(name));
+-	if (!sweet_syserr_match(name)) {
++	if (!sweet_syserr_match(name) || !sweet_syserr_proc_budget(name)) {
+ 		return;
+ 	}
+ 

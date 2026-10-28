@@ -1,0 +1,107 @@
+--- a/air/chl_vk.c
++++ b/air/chl_vk.c
+@@ -175,6 +175,8 @@
+    { 260, "MTLPixelFormatDepth32Float_Stencil8", VK_FORMAT_D32_SFLOAT_S8_UINT, 8, 1, 1, ASPECT_DEPTH | ASPECT_STENCIL, 0, false },
+    /* Apple's extended-range formats, by a native format of the same size (the XR encoding itself is not reproduced):
+     * QuartzCore builds its deep-colour pipelines in these whatever the device answers */
++   /* Bergamota: two-plane YCbCr 4:2:0 surfaces (420v/420f/x420/xf20) are decoded on the CPU into this stand-in (bgmtl.m) */
++   C(500, "MTLPixelFormatYCBCR8_420_2P (as BGRA8)", VK_FORMAT_B8G8R8A8_UNORM, 4),
+    C(550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)", VK_FORMAT_B8G8R8A8_UNORM, 4),
+    C(552, "MTLPixelFormatBGRA10_XR (as RGBA16Float)", VK_FORMAT_R16G16B16A16_SFLOAT, 8),
+    C(553, "MTLPixelFormatBGRA10_XR_sRGB (as RGBA16Float)", VK_FORMAT_R16G16B16A16_SFLOAT, 8),
+--- a/air/air_metal.c
++++ b/air/air_metal.c
+@@ -1207,6 +1207,7 @@
+     * consistent (the XR encoding itself is not reproduced: SDR content comes out close, extended values do not). QuartzCore's
+     * render server builds its deep-colour pipelines in these whatever the device answers, and a refusal aborts the server
+     * ("Metal failed to build render pipeline", the first live backboardd runs). */
++   { 500, "MTLPixelFormatYCBCR8_420_2P (as BGRA8)",   PIPE_FORMAT_B8G8R8A8_UNORM },
+    { 550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)",  PIPE_FORMAT_B8G8R8A8_UNORM },
+    { 552, "MTLPixelFormatBGRA10_XR (as RGBA16Float)",   PIPE_FORMAT_R16G16B16A16_FLOAT },
+    { 553, "MTLPixelFormatBGRA10_XR_sRGB (as RGBA16Float)", PIPE_FORMAT_R16G16B16A16_FLOAT },
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -585,6 +585,7 @@
+    const void *_ncBytes; // newTextureWithBytesNoCopy: the caller's memory, refreshed from at each use like _linSrc
+    BOOL _surfCopy;       // an IOSurface the GPU could not import: own memory, refreshed from the surface at each use
+    BOOL _xr2p;           // ... a two-plane RGB10A8_2P_XR10 one ('b3a8': XR10 RGB + A8 alpha), decoded into BGRA8 at each refresh
++   BOOL _yuv2p;          // ... a two-plane YCbCr 4:2:0 one (420v/420f/x420/xf20, Metal format 500), decoded into BGRA8 at each refresh
+    uint32_t _surfSeed;   // the surface's seed at the last refresh (an unchanged surface is not copied again)
+    unsigned long _flushSeq;   // the command buffer that last flushed this imported surface (once per command buffer)
+    BOOL _surfFresh;      // _surfSeed is valid: the surface was decoded or written back at least once (a seed may be 0)
+@@ -2055,6 +2056,15 @@
+          if (_tex) { _surfCopy = YES; _xr2p = YES; }
+          else snprintf(why, sizeof(why), "IOSurface %u (%ux%u fmt 550, two planes): own memory refused: %s", IOSurfaceGetID(sf),
+                        _desc.width, _desc.height, why2);
++      } else if (!_tex && [d pixelFormat] == 500 && IOSurfaceGetPlaneCount(sf) >= 2) {
++         /* Bergamota: two-plane YCbCr 4:2:0 surfaces (MTLPixelFormatYCBCR8_420_2P over '420v'/'420f', 10-bit 'x420'/'xf20'):
++          * SpringBoard's Control Center and app-switcher backdrops (579x1254 on the 3a: asteroids ast18, 83 refusals = grey
++          * boxes), video frames. Own BGRA8 memory (500's stand-in), decoded on the CPU when the seed moves. */
++         char why2[256] = { 0 };
++         _tex = chl_texture_create([device chl], &_desc, why2, sizeof(why2));
++         if (_tex) { _surfCopy = YES; _yuv2p = YES; }
++         else snprintf(why, sizeof(why), "IOSurface %u (%ux%u fmt 500, two planes): own memory refused: %s", IOSurfaceGetID(sf),
++                       _desc.width, _desc.height, why2);
+       } else if (!_tex) {
+          char why2[256] = { 0 };
+          _tex = chl_texture_create([device chl], &_desc, why2, sizeof(why2));
+@@ -2186,6 +2196,59 @@
+          chl_texture_flush_surface(_tex);
+          if (cb) _flushSeq = cb->_seq;
+       }
++   } else if (_yuv2p && _surface) {
++      IOSurfaceRef sf = (IOSurfaceRef)_surface;
++      uint32_t seed = IOSurfaceGetSeed(sf);
++      if ((!_surfFresh || seed != _surfSeed) && IOSurfaceLock(sf, kIOSurfaceLockReadOnly, NULL) == 0) {
++         // plane 0: luma, one sample per texel; plane 1: Cb, Cr interleaved, one pair per 2x2 texels. '420v'/'x420' are video
++         // range (Y 16..235, C 16..240), '420f'/'xf20' full range; the 10-bit ones keep the sample in the high bits of a 16-bit
++         // word. BT.709 into BGRA8, the stand-in format of 500 (Apple's GPU samples these as RGB, so the shaders expect RGB).
++         OSType pf = IOSurfaceGetPixelFormat(sf);
++         int wide = (pf == 0x78343230 /* x420 */ || pf == 0x78663230 /* xf20 */);
++         int full = (pf == 0x34323066 /* 420f */ || pf == 0x78663230 /* xf20 */);
++         const uint8_t *p0 = IOSurfaceGetBaseAddressOfPlane(sf, 0), *p1 = IOSurfaceGetBaseAddressOfPlane(sf, 1);
++         size_t r0 = IOSurfaceGetBytesPerRowOfPlane(sf, 0), r1 = IOSurfaceGetBytesPerRowOfPlane(sf, 1);
++         unsigned w = MIN(_desc.width, (unsigned)IOSurfaceGetWidthOfPlane(sf, 0)), h = MIN(_desc.height, (unsigned)IOSurfaceGetHeightOfPlane(sf, 0));
++         unsigned cw = (unsigned)IOSurfaceGetWidthOfPlane(sf, 1), chh = (unsigned)IOSurfaceGetHeightOfPlane(sf, 1);
++         uint8_t *out = (p0 && p1 && w && h && cw && chh) ? malloc((size_t)w * h * 4) : NULL;
++         if (out) {
++#define BG_CL(v) ((uint8_t)((v) < 0 ? 0 : (v) > 255 ? 255 : (v)))
++            for (unsigned y = 0; y < h; y++) {
++               const uint8_t *s0 = p0 + (size_t)y * r0, *s1 = p1 + (size_t)MIN(y / 2, chh - 1) * r1;
++               uint8_t *o = out + (size_t)y * w * 4;
++               for (unsigned x = 0; x < w; x++) {
++                  unsigned cx = MIN(x / 2, cw - 1);
++                  int Y, cb, cr;
++                  if (wide) {
++                     Y = ((const uint16_t *)s0)[x] >> 8;
++                     cb = ((const uint16_t *)s1)[2 * cx] >> 8;
++                     cr = ((const uint16_t *)s1)[2 * cx + 1] >> 8;
++                  } else {
++                     Y = s0[x];
++                     cb = s1[2 * cx];
++                     cr = s1[2 * cx + 1];
++                  }
++                  int yy = full ? Y * 256 : (Y - 16) * 298;          // 8.8 fixed point
++                  int u = cb - 128, v = cr - 128;
++                  if (!full) { u = (u * 291) >> 8; v = (v * 291) >> 8; }
++                  int r = (yy + 403 * v) >> 8, g = (yy - 48 * u - 120 * v) >> 8, b = (yy + 475 * u) >> 8;
++                  o[4 * x] = BG_CL(b);
++                  o[4 * x + 1] = BG_CL(g);
++                  o[4 * x + 2] = BG_CL(r);
++                  o[4 * x + 3] = 255;
++               }
++            }
++#undef BG_CL
++         }
++         IOSurfaceUnlock(sf, kIOSurfaceLockReadOnly, NULL);
++         if (out) {
++            const unsigned o[3] = { 0, 0, 0 }, sz[3] = { w, h, 1 };
++            if (chl_texture_replace(_tex, 0, 0, o, sz, out, w * 4, 0, why, sizeof(why)) != 0) BG_LOG("YCbCr surface refresh: %s\n", why);
++            free(out);
++            _surfSeed = seed;
++            _surfFresh = YES;
++         }
++      }
+    } else if (_xr2p && _surface) {
+       IOSurfaceRef sf = (IOSurfaceRef)_surface;
+       uint32_t seed = IOSurfaceGetSeed(sf);
